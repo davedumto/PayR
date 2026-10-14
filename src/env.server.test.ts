@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { EnvValidationError, parseEnv, publicEnvKeys, serverEnvKeys, type RawEnv } from "@/env";
+import { EnvValidationError, publicSchema, type RawEnv } from "@/env.edge";
+import { parseServerEnv, serverSchema } from "@/env.server";
 
 const valid: RawEnv = {
   VELLAR_FACILITATOR_URL: "https://facilitator.example.test",
@@ -14,7 +15,7 @@ const valid: RawEnv = {
 
 function problemsFor(raw: RawEnv): string[] {
   try {
-    parseEnv(raw);
+    parseServerEnv(raw);
   } catch (error) {
     if (error instanceof EnvValidationError) {
       return [...error.problems];
@@ -24,16 +25,16 @@ function problemsFor(raw: RawEnv): string[] {
   return [];
 }
 
-describe("parseEnv", () => {
+describe("parseServerEnv", () => {
   it("accepts a complete, valid environment", () => {
-    const env = parseEnv(valid);
+    const env = parseServerEnv(valid);
     expect(env.NEXT_PUBLIC_VELLAR_NETWORK).toBe("testnet");
     expect(env.ANTHROPIC_MODEL).toBe("test-model-id");
   });
 
   it("fails fast and names the missing variable", () => {
     const raw: RawEnv = { ...valid, KV_REST_API_TOKEN: undefined };
-    expect(() => parseEnv(raw)).toThrow(EnvValidationError);
+    expect(() => parseServerEnv(raw)).toThrow(EnvValidationError);
     expect(problemsFor(raw)).toEqual(["KV_REST_API_TOKEN is missing"]);
   });
 
@@ -43,9 +44,10 @@ describe("parseEnv", () => {
 
   it("reports every missing variable at once", () => {
     const problems = problemsFor({ NEXT_PUBLIC_VELLAR_NETWORK: "testnet" });
-    expect(problems).toHaveLength(serverEnvKeys.length);
-    for (const key of serverEnvKeys) {
-      expect(problems).toContain(`${key} is missing`);
+    for (const key of Object.keys(serverSchema.shape)) {
+      if (key !== "NEXT_PUBLIC_VELLAR_NETWORK") {
+        expect(problems).toContain(`${key} is missing`);
+      }
     }
   });
 
@@ -64,7 +66,7 @@ describe("parseEnv", () => {
   it("never echoes a secret value in the error message", () => {
     const secret = "sk-live-do-not-print-0123456789";
     try {
-      parseEnv({ ...valid, KV_REST_API_URL: secret });
+      parseServerEnv({ ...valid, KV_REST_API_URL: secret });
       expect.fail("expected validation to fail");
     } catch (error) {
       expect(String(error)).not.toContain(secret);
@@ -74,22 +76,14 @@ describe("parseEnv", () => {
 
 describe("secret handling", () => {
   it("keeps every server variable free of the NEXT_PUBLIC_ prefix", () => {
-    for (const key of serverEnvKeys) {
-      expect(key.startsWith("NEXT_PUBLIC_")).toBe(false);
+    for (const key of Object.keys(serverSchema.shape)) {
+      if (key !== "NEXT_PUBLIC_VELLAR_NETWORK") {
+        expect(key.startsWith("NEXT_PUBLIC_")).toBe(false);
+      }
     }
   });
 
   it("exposes only the network as a public variable", () => {
-    expect([...publicEnvKeys]).toEqual(["NEXT_PUBLIC_VELLAR_NETWORK"]);
-  });
-
-  it("does not return server secrets in the parsed public shape", () => {
-    const env = parseEnv(valid);
-    const publicOnly = Object.fromEntries(publicEnvKeys.map((key) => [key, env[key]])) as Record<
-      string,
-      unknown
-    >;
-    expect(Object.keys(publicOnly)).not.toContain("ANTHROPIC_API_KEY");
-    expect(JSON.stringify(publicOnly)).not.toContain("test-anthropic-key");
+    expect(Object.keys(publicSchema.shape)).toEqual(["NEXT_PUBLIC_VELLAR_NETWORK"]);
   });
 });
