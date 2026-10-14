@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { findAttributionViolations, type CommitMessage } from "@/ci/attribution";
+import {
+  findAttributionViolations,
+  findIdentityViolations,
+  isAnthropicEmail,
+  type CommitMessage,
+} from "@/ci/attribution";
 
 function commit(message: string): CommitMessage {
   return { sha: "abc1234", message };
@@ -99,5 +104,69 @@ describe("findAttributionViolations", () => {
 
   it("returns no violations for an empty range", () => {
     expect(findAttributionViolations([])).toEqual([]);
+  });
+});
+
+describe("isAnthropicEmail", () => {
+  const cases: readonly { email: string; expected: boolean }[] = [
+    { email: "noreply@anthropic.com", expected: true },
+    { email: "NoReply@Anthropic.com", expected: true },
+    { email: "  noreply@anthropic.com  ", expected: true },
+    { email: "bot@anthropic.com", expected: true },
+    { email: "someone@ANTHROPIC.COM", expected: true },
+    { email: "112870446+davedumto@users.noreply.github.com", expected: false },
+    { email: "dana@example.com", expected: false },
+    { email: "dana@notanthropic.com", expected: false },
+    { email: "dana@anthropic.com.evil.example", expected: false },
+    { email: "anthropic.com", expected: false },
+    { email: "", expected: false },
+  ];
+
+  for (const testCase of cases) {
+    it(`${JSON.stringify(testCase.email)} -> ${testCase.expected}`, () => {
+      expect(isAnthropicEmail(testCase.email)).toBe(testCase.expected);
+    });
+  }
+});
+
+describe("findIdentityViolations", () => {
+  const owner = "112870446+davedumto@users.noreply.github.com";
+
+  it("passes when author and committer are the owner", () => {
+    expect(
+      findIdentityViolations([{ sha: "a", authorEmail: owner, committerEmail: owner }]),
+    ).toEqual([]);
+  });
+
+  it("flags an Anthropic author even with a clean message", () => {
+    expect(
+      findIdentityViolations([
+        { sha: "a", authorEmail: "noreply@anthropic.com", committerEmail: owner },
+      ]),
+    ).toEqual([{ sha: "a", role: "author", email: "noreply@anthropic.com" }]);
+  });
+
+  it("flags an Anthropic committer", () => {
+    expect(
+      findIdentityViolations([
+        { sha: "a", authorEmail: owner, committerEmail: "noreply@anthropic.com" },
+      ]),
+    ).toEqual([{ sha: "a", role: "committer", email: "noreply@anthropic.com" }]);
+  });
+
+  it("reports both roles when author and committer are both Anthropic", () => {
+    expect(
+      findIdentityViolations([
+        { sha: "a", authorEmail: "bot@anthropic.com", committerEmail: "noreply@anthropic.com" },
+      ]),
+    ).toHaveLength(2);
+  });
+
+  it("checks every commit and reports the right sha", () => {
+    const violations = findIdentityViolations([
+      { sha: "good", authorEmail: owner, committerEmail: owner },
+      { sha: "bad", authorEmail: owner, committerEmail: "noreply@anthropic.com" },
+    ]);
+    expect(violations.map((v) => v.sha)).toEqual(["bad"]);
   });
 });
