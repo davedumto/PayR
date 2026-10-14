@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build, smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Placeholder values so the build can validate configuration. Not secrets.
+      VELLAR_FACILITATOR_URL: https://facilitator.example.invalid
+      ANTHROPIC_API_KEY: ci-placeholder
+      KV_REST_API_URL: https://kv.example.invalid
+      KV_REST_API_TOKEN: ci-placeholder
+      VELLAR_BOOTSTRAP_AGENT_KEY: ci-placeholder
+      ANTHROPIC_MODEL: ci-placeholder
+      NEXT_PUBLIC_VELLAR_NETWORK: testnet
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint and format check
+        run: |
+          pnpm lint
+          pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Smoke tests
+        run: pnpm test:e2e
