@@ -46,7 +46,7 @@ For the smoke tests on a machine with a preinstalled Chromium, set
 src/
   app/                 App Router: root layout, fonts, dashboard routes
   components/
-    shell/             AppShell, sidebar nav, mobile drawer, testnet notice
+    shell/             AppShell, sidebar nav, mobile drawer, network notice
     ui/                Button, Card, Badge, EmptyState, PageHeader
   lib/nav.ts           Navigation items and active-route matching
   styles/tokens.css    Sylox colour and type tokens (the only colour source)
