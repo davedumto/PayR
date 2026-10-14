@@ -1,0 +1,36 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+:root {
+  color-scheme: dark;
+  /* Tabular figures for every numeric value across the app. */
+  font-variant-numeric: tabular-nums;
+}
+
+html,
+body {
+  background-color: var(--color-slate-black);
+  color: var(--color-silo-oatmeal);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Visible 2px ring on every interactive element. */
+:focus-visible {
+  outline: 2px solid var(--color-risk-crimson);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
