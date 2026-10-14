@@ -1,0 +1,106 @@
+import { z } from "zod";
+
+import { isStellarAddress, strKeyKind } from "@/proxy/strkey";
+import { validateTargetUrl } from "@/proxy/ssrf";
+
+/**
+ * Seller proxy config, validated on every write and every read. Seller input is
+ * untrusted. Unknown keys are rejected so a config cannot smuggle a field.
+ */
+
+export const PROXY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,62}$/;
+
+/** Upper bound on one request's price: 100,000,000.0000000 units at 7 decimals. */
+export const MAX_PRICE_BASE_UNITS = 10n ** 15n;
+
+export const USDC_DECIMALS = 7;
+
+const DECIMAL_PATTERN = /^(0|[1-9]\d*)(?:\.(\d{1,7}))?$/;
+
+/**
+ * Converts a decimal string such as "0.05" into base units (bigint) using string
+ * arithmetic only. Rejects numbers, floats, exponents, signs, separators, more
+ * than `decimals` fractional digits, and anything else that is not a plain
+ * decimal. Throws TypeError or RangeError.
+ */
+export function parseDecimalToBaseUnits(input: unknown, decimals: number = USDC_DECIMALS): bigint {
+  if (typeof input !== "string") {
+    throw new TypeError("amount must be a decimal string, not a number");
+  }
+  const match = DECIMAL_PATTERN.exec(input);
+  if (!match) {
+    throw new RangeError("amount must be a plain decimal with no sign, exponent or separators");
+  }
+  const whole = match[1]!;
+  const fraction = match[2] ?? "";
+  if (fraction.length > decimals) {
+    throw new RangeError(`amount has more than ${decimals} decimal places`);
+  }
+  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, "0"));
+}
+
+const payToSchema = z.string().refine((value) => isStellarAddress(value), {
+  message: "must be a valid Stellar G or C address",
+});
+
+const contractSchema = z.string().refine((value) => strKeyKind(value) === "C", {
+  message: "must be a valid Stellar contract (C) address",
+});
+
+export const ProxyConfigSchema = z
+  .object({
+    version: z.number().int().min(1),
+    id: z.string().regex(PROXY_ID_PATTERN, {
+      message: "must be 3 to 63 characters of lowercase letters, digits and hyphens",
+    }),
+    status: z.enum(["active", "paused"]),
+    targetUrl: z
+      .string()
+      .max(2048)
+      .superRefine((value, ctx) => {
+        const check = validateTargetUrl(value);
+        if (!check.ok) {
+          ctx.addIssue({ code: "custom", message: `target URL rejected: ${check.reason}` });
+        }
+      }),
+    priceBaseUnits: z.string().refine(
+      // The regex runs first and short-circuits, so BigInt only sees digit strings.
+      (value) => /^[1-9]\d*$/.test(value) && BigInt(value) <= MAX_PRICE_BASE_UNITS,
+      { message: "must be digits only, greater than zero, and within the maximum price" },
+    ),
+    asset: contractSchema,
+    payTo: payToSchema,
+    network: z.enum(["stellar:testnet", "stellar:pubnet"]),
+    description: z.string().regex(/^[\x20-\x7e]{1,256}$/, {
+      message: "must be 1 to 256 printable ASCII characters",
+    }),
+    allowedMethods: z
+      .array(z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]))
+      .min(1)
+      .default(["GET", "POST"]),
+    maxRequestBytes: z.number().int().min(0).max(1_048_576).default(65_536),
+    maxResponseBytes: z.number().int().min(1).max(5_242_880).default(1_048_576),
+    upstreamTimeoutMs: z.number().int().min(1).max(30_000).default(10_000),
+    facilitatorTimeoutMs: z.number().int().min(1).max(15_000).default(5_000),
+  })
+  .strict();
+
+export type ProxyConfig = z.output<typeof ProxyConfigSchema>;
+
+export type ConfigParseResult =
+  | { readonly ok: true; readonly config: ProxyConfig }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+/** Parses untrusted input (for example a KV value). Never throws. */
+export function parseProxyConfig(input: unknown): ConfigParseResult {
+  const result = ProxyConfigSchema.safeParse(input);
+  if (result.success) {
+    return { ok: true, config: result.data };
+  }
+  return {
+    ok: false,
+    issues: result.error.issues.map(
+      (issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`,
+    ),
+  };
+}
