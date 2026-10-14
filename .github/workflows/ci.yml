@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build, audit, smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Placeholder values so the build can validate configuration. Not secrets.
+      VELLAR_FACILITATOR_URL: https://facilitator.example.invalid
+      ANTHROPIC_API_KEY: ci-placeholder
+      KV_REST_API_URL: https://kv.example.invalid
+      KV_REST_API_TOKEN: ci-placeholder
+      VELLAR_BOOTSTRAP_AGENT_KEY: ci-placeholder
+      ANTHROPIC_MODEL: ci-placeholder
+      NEXT_PUBLIC_VELLAR_NETWORK: testnet
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Full history, so the attribution check can read every commit in the PR.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.28.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: No AI attribution trailers
+        if: github.event_name == 'pull_request'
+        env:
+          ATTRIBUTION_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+        run: pnpm exec vitest run src/ci/attribution-range.test.ts
+
+      - name: Dependency audit (production, high and above)
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Lint and format check
+        run: |
+          pnpm lint
+          pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Smoke tests
+        run: pnpm test:e2e
