@@ -112,3 +112,21 @@ test("desktop shows the persistent sidebar and hides the drawer trigger", async 
   await expect(page.locator("aside").getByRole("navigation", { name: "Primary" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Menu" })).toBeHidden();
 });
+
+test("mobile: page content is inert while the drawer is open", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "drawer applies below md only");
+
+  await page.goto("/dashboard");
+  // inert is inherited from the wrapper, so check for an inert ancestor, not the element itself.
+  const inertState = () =>
+    page.evaluate(() => document.getElementById("main")?.closest("[inert]") !== null);
+
+  expect(await inertState()).toBe(false);
+  await page.getByRole("button", { name: "Menu" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  expect(await inertState()).toBe(true);
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await inertState()).toBe(false);
+});
