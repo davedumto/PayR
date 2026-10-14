@@ -64,8 +64,8 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Unit tests
-        run: pnpm test
+      - name: Unit tests and proxy coverage gate (>= 90% lines in src/proxy)
+        run: pnpm test:coverage
 
       - name: Build
         run: pnpm build

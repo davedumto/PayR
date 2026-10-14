@@ -13,5 +13,13 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     environment: "node",
+    coverage: {
+      provider: "v8",
+      include: ["src/proxy/**/*.ts"],
+      exclude: ["src/proxy/**/*.test.ts"],
+      reporter: ["text", "json-summary"],
+      // Gate: at least 90% of lines in the proxy core must be covered.
+      thresholds: { lines: 90 },
+    },
   },
 });
