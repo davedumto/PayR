@@ -1,0 +1,643 @@
+import { describe, expect, it } from "vitest";
+
+import { parseProxyConfig, type ProxyConfig } from "@/proxy/config";
+import { encodeHeader, requirementsFor } from "@/proxy/challenge";
+import type { SettleOutcome, VerifyOutcome } from "@/proxy/facilitator";
+import {
+  type ConfigStore,
+  type FacilitatorPort,
+  handlePaidRequest,
+  type FlowDeps,
+  type PayloadScanner,
+  type ProxyRequest,
+  sanitizeRequestHeaders,
+  sanitizeResponseHeaders,
+  type StateKv,
+  type UpstreamFetcher,
+  type UpstreamRequest,
+  type UpstreamResponse,
+} from "@/proxy/flow";
+
+const PAY_TO = "GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57";
+const ASSET = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+const UPSTREAM_SECRET = "UPSTREAM-SECRET-BODY";
+const decoder = new TextDecoder();
+
+function config(overrides: Record<string, unknown> = {}): ProxyConfig {
+  const result = parseProxyConfig({
+    version: 1,
+    id: "weather-api",
+    status: "active",
+    targetUrl: "https://api.example.com/v1",
+    priceBaseUnits: "500000",
+    asset: ASSET,
+    payTo: PAY_TO,
+    network: "stellar:testnet",
+    description: "Hourly forecast",
+    ...overrides,
+  });
+  if (!result.ok) {
+    throw new Error(result.issues.join("; "));
+  }
+  return result.config;
+}
+
+function signatureFor(cfg: ProxyConfig, overrides: Record<string, unknown> = {}): string {
+  return encodeHeader({
+    x402Version: 2,
+    accepted: requirementsFor(cfg),
+    payload: { authorization: "opaque" },
+    ...overrides,
+  });
+}
+
+function request(
+  cfg: ProxyConfig,
+  headers: Record<string, string> = {},
+  extra: Partial<ProxyRequest> = {},
+): ProxyRequest {
+  return {
+    proxyId: cfg.id,
+    method: "GET",
+    path: "/forecast?city=lisbon",
+    headers,
+    body: new Uint8Array(),
+    resourceUrl: "https://proxy.example.test/proxy/weather-api/forecast",
+    ...extra,
+  };
+}
+
+type Harness = {
+  deps: FlowDeps;
+  calls: { verify: number; settle: number; upstream: UpstreamRequest[]; scan: number };
+  setConfig(value: unknown): void;
+  failConfigRead(): void;
+  failStateWrite(): void;
+  verifyOutcome: VerifyOutcome | (() => Promise<VerifyOutcome>);
+  settleOutcome: SettleOutcome | (() => Promise<SettleOutcome>);
+  upstreamResult: UpstreamResponse | Error | (() => Promise<UpstreamResponse>);
+  scanner?: PayloadScanner;
+};
+
+function harness(cfg: ProxyConfig): Harness {
+  let stored: unknown = cfg;
+  let configFails = false;
+  let stateFails = false;
+  const locks = new Set<string>();
+  const calls = { verify: 0, settle: 0, upstream: [] as UpstreamRequest[], scan: 0 };
+  const h = {} as Harness;
+  const configs: ConfigStore = {
+    get: async () => {
+      if (configFails) throw new Error("KV unavailable");
+      return stored;
+    },
+  };
+  const state: StateKv = {
+    setNx: async (key) => {
+      if (stateFails) throw new Error("KV unavailable");
+      if (locks.has(key)) return false;
+      locks.add(key);
+      return true;
+    },
+  };
+  const facilitator: FacilitatorPort = {
+    verify: async () => {
+      calls.verify += 1;
+      return typeof h.verifyOutcome === "function" ? h.verifyOutcome() : h.verifyOutcome;
+    },
+    settle: async () => {
+      calls.settle += 1;
+      return typeof h.settleOutcome === "function" ? h.settleOutcome() : h.settleOutcome;
+    },
+  };
+  const upstream: UpstreamFetcher = {
+    fetch: async (req) => {
+      calls.upstream.push(req);
+      if (typeof h.upstreamResult === "function") return h.upstreamResult();
+      if (h.upstreamResult instanceof Error) throw h.upstreamResult;
+      return h.upstreamResult;
+    },
+  };
+  h.calls = calls;
+  h.deps = {
+    configs,
+    state,
+    facilitator,
+    upstream,
+    clock: { now: () => 1_700_000_000_000 },
+    get scanner() {
+      return h.scanner;
+    },
+  } as FlowDeps;
+  h.setConfig = (value) => {
+    stored = value;
+  };
+  h.failConfigRead = () => {
+    configFails = true;
+  };
+  h.failStateWrite = () => {
+    stateFails = true;
+  };
+  h.verifyOutcome = { kind: "valid", payer: "GPAYER" };
+  h.settleOutcome = { kind: "settled", transaction: "txhash" };
+  h.upstreamResult = {
+    status: 200,
+    headers: { "content-type": "application/json", "set-cookie": "s=1" },
+    body: new TextEncoder().encode(UPSTREAM_SECRET),
+  };
+  return h;
+}
+
+function bodyText(response: { body: Uint8Array }): string {
+  return decoder.decode(response.body);
+}
+
+function paidHeaders(
+  cfg: ProxyConfig,
+  overrides: Record<string, unknown> = {},
+): Record<string, string> {
+  return { "payment-signature": signatureFor(cfg, overrides) };
+}
+
+describe("unpaid and malformed requests (no facilitator or upstream call)", () => {
+  it("unpaid request gets 402 with a PAYMENT-REQUIRED challenge", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const response = await handlePaidRequest(request(cfg), h.deps);
+    expect(response.status).toBe(402);
+    const challengeHeader = response.headers["payment-required"];
+    expect(challengeHeader).toBeDefined();
+    const decoded = JSON.parse(Buffer.from(challengeHeader!, "base64").toString("utf8"));
+    expect(decoded.accepts[0].amount).toBe("500000");
+    expect(decoded.accepts[0].payTo).toBe(PAY_TO);
+    expect(h.calls.upstream).toHaveLength(0);
+    expect(h.calls.settle).toBe(0);
+  });
+
+  it("unknown proxy id gets 404", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.setConfig(null);
+    expect((await handlePaidRequest(request(cfg), h.deps)).status).toBe(404);
+  });
+
+  it("a disallowed method gets 405 with an Allow header", async () => {
+    const cfg = config({ allowedMethods: ["GET"] });
+    const h = harness(cfg);
+    const response = await handlePaidRequest(request(cfg, {}, { method: "DELETE" }), h.deps);
+    expect(response.status).toBe(405);
+    expect(response.headers["allow"]).toBe("GET");
+  });
+
+  it("a request body over the limit gets 413 before any payment check", async () => {
+    const cfg = config({ maxRequestBytes: 4 });
+    const h = harness(cfg);
+    const response = await handlePaidRequest(
+      request(cfg, {}, { method: "POST", body: new Uint8Array(5) }),
+      h.deps,
+    );
+    expect(response.status).toBe(413);
+    expect(h.calls.verify).toBe(0);
+  });
+
+  it("a PAYMENT-SIGNATURE over 16 KiB gets 413 without decoding", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const response = await handlePaidRequest(
+      request(cfg, { "payment-signature": "A".repeat(16 * 1024 + 1) }),
+      h.deps,
+    );
+    expect(response.status).toBe(413);
+    expect(h.calls.verify).toBe(0);
+  });
+
+  it("a malformed PAYMENT-SIGNATURE gets a fresh 402 and no upstream call", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const response = await handlePaidRequest(
+      request(cfg, { "payment-signature": "not base64!" }),
+      h.deps,
+    );
+    expect(response.status).toBe(402);
+    expect(h.calls.upstream).toHaveLength(0);
+    expect(h.calls.verify).toBe(0);
+  });
+
+  it("terms that differ from the seller's (tampered amount) get a 402 and no verify call", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const tampered = { accepted: { ...requirementsFor(cfg), amount: "1" } };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg, tampered)), h.deps);
+    expect(response.status).toBe(402);
+    expect(JSON.parse(bodyText(response)).error).toBe("payment_terms_mismatch");
+    expect(h.calls.verify).toBe(0);
+  });
+});
+
+describe("I5 and I4: the stored config is re-validated, and a bad read fails closed", () => {
+  it("I5: a stored config that no longer validates gets 503 and no upstream call", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.setConfig({ ...cfg, targetUrl: "https://169.254.169.254/latest" });
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(JSON.parse(bodyText(response)).error).toBe("config_invalid");
+    expect(h.calls.upstream).toHaveLength(0);
+    expect(h.calls.verify).toBe(0);
+  });
+
+  it("I5: a stored config with an extra key is rejected", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.setConfig({ ...cfg, adminOverride: true });
+    expect((await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps)).status).toBe(503);
+  });
+
+  it("I4: a KV error reading the config fails closed with 503 and no settle", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.failConfigRead();
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(response.headers["retry-after"]).toBe("30");
+    expect(h.calls.settle).toBe(0);
+    expect(h.calls.upstream).toHaveLength(0);
+  });
+
+  it("a paused seller gets 503 seller_paused and no facilitator call", async () => {
+    const cfg = config({ status: "paused" });
+    const h = harness(cfg);
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(JSON.parse(bodyText(response)).error).toBe("seller_paused");
+    expect(h.calls.verify).toBe(0);
+  });
+});
+
+describe("I2: settle only after verify passes AND the upstream returns 2xx", () => {
+  it("I2: a verify that is invalid never reaches the upstream or settle", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.verifyOutcome = { kind: "invalid", reason: "bad_sig" };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(402);
+    expect(h.calls.upstream).toHaveLength(0);
+    expect(h.calls.settle).toBe(0);
+  });
+
+  it("I2: an upstream 500 is not settled, so the buyer is not charged", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.upstreamResult = { status: 500, headers: {}, body: new TextEncoder().encode("boom") };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(502);
+    expect(JSON.parse(bodyText(response)).error).toBe("upstream_error");
+    expect(h.calls.settle).toBe(0);
+    expect(h.calls.upstream).toHaveLength(1);
+  });
+
+  it("I2: an upstream 3xx redirect is treated as failure and not settled", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.upstreamResult = {
+      status: 302,
+      headers: { location: "https://elsewhere.test" },
+      body: new Uint8Array(),
+    };
+    expect((await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps)).status).toBe(502);
+    expect(h.calls.settle).toBe(0);
+  });
+
+  it("I2: an upstream timeout is a 504 and is not settled", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const timeout = new Error("timed out");
+    timeout.name = "TimeoutError";
+    h.upstreamResult = timeout;
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(504);
+    expect(JSON.parse(bodyText(response)).error).toBe("upstream_timeout");
+    expect(h.calls.settle).toBe(0);
+  });
+
+  it("an upstream network failure is a 502 and is not settled", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.upstreamResult = new Error("ECONNRESET");
+    expect((await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps)).status).toBe(502);
+    expect(h.calls.settle).toBe(0);
+  });
+
+  it("a response body over maxResponseBytes is a 502 and is not settled", async () => {
+    const cfg = config({ maxResponseBytes: 4 });
+    const h = harness(cfg);
+    h.upstreamResult = { status: 200, headers: {}, body: new TextEncoder().encode("too long") };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(502);
+    expect(JSON.parse(bodyText(response)).error).toBe("upstream_too_large");
+    expect(h.calls.settle).toBe(0);
+  });
+});
+
+describe("I3: a PAYMENT-SIGNATURE reaches the upstream at most once", () => {
+  it("I3: two concurrent requests with one signature make one upstream call; the second gets 409", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const headers = paidHeaders(cfg);
+    const [first, second] = await Promise.all([
+      handlePaidRequest(request(cfg, headers), h.deps),
+      handlePaidRequest(request(cfg, headers), h.deps),
+    ]);
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    expect(h.calls.upstream).toHaveLength(1);
+    expect(h.calls.settle).toBe(1);
+  });
+
+  it("I3: replaying a completed signature gets 409 and never reaches the upstream again", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const headers = paidHeaders(cfg);
+    expect((await handlePaidRequest(request(cfg, headers), h.deps)).status).toBe(200);
+    expect((await handlePaidRequest(request(cfg, headers), h.deps)).status).toBe(409);
+    expect(h.calls.upstream).toHaveLength(1);
+  });
+
+  it("I4: a KV error writing the replay lock fails closed with 503", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.failStateWrite();
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(h.calls.verify).toBe(0);
+    expect(h.calls.upstream).toHaveLength(0);
+  });
+});
+
+describe("I1: the upstream body is returned only after settle succeeds", () => {
+  it("I1: a settled payment returns the upstream body with a PAYMENT-RESPONSE receipt", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(200);
+    expect(bodyText(response)).toBe(UPSTREAM_SECRET);
+    const receipt = JSON.parse(
+      Buffer.from(response.headers["payment-response"]!, "base64").toString("utf8"),
+    );
+    expect(receipt).toEqual({
+      success: true,
+      transaction: "txhash",
+      network: "stellar:testnet",
+      timestamp: 1_700_000_000_000,
+    });
+  });
+
+  it.each([
+    ["retry_safe", { kind: "retry_safe", reason: "x" } as SettleOutcome],
+    [
+      "terminal_charged",
+      { kind: "terminal_charged", transaction: "h", reason: "x" } as SettleOutcome,
+    ],
+    ["refused", { kind: "refused", reason: "sponsor_balance_low" } as SettleOutcome],
+    ["paused", { kind: "paused" } as SettleOutcome],
+    ["invalid", { kind: "invalid", reason: "x" } as SettleOutcome],
+  ])("I1: a %s settle outcome never returns the upstream body", async (_name, outcome) => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = outcome;
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(bodyText(response)).not.toContain(UPSTREAM_SECRET);
+    expect(response.headers["payment-response"]).toBeUndefined();
+  });
+
+  it("I1: an upstream that answered 200 but whose settle was unreadable does not leak the body", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const deps = {
+      ...h.deps,
+      facilitator: {
+        verify: async () => ({ kind: "valid" as const }),
+        settle: async () => {
+          throw new Error("unreadable");
+        },
+      },
+    };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+    expect(bodyText(response)).not.toContain(UPSTREAM_SECRET);
+    expect(response.status).toBe(502);
+  });
+});
+
+describe("I6: retry decisions follow the classified settle outcome; settle is never repeated", () => {
+  it("I6: retry_safe returns a fresh 402 with the settle reason, and does not retry settle", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = { kind: "retry_safe", reason: "settle_exact_stellar_transaction_failed" };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(402);
+    expect(response.headers["payment-required"]).toBeDefined();
+    expect(response.headers["retry-after"]).toBeUndefined();
+    expect(h.calls.settle).toBe(1);
+  });
+
+  it("I6: terminal_charged has no retry hint and surfaces the transaction hash", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = { kind: "terminal_charged", transaction: "deadbeef", reason: "x" };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(502);
+    expect(response.headers["retry-after"]).toBeUndefined();
+    expect(JSON.parse(bodyText(response))).toEqual({
+      error: "settlement_failed_charged",
+      transaction: "deadbeef",
+    });
+    expect(h.calls.settle).toBe(1);
+  });
+
+  it("I6: an unreachable settle is terminal and is not retried", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = {
+      kind: "terminal_charged",
+      transaction: null,
+      reason: "ambiguous: no response",
+    };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(502);
+    expect(h.calls.settle).toBe(1);
+  });
+
+  it("I6: a settle that throws is treated as settlement_unknown and not retried", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const deps = {
+      ...h.deps,
+      facilitator: {
+        verify: async () => ({ kind: "valid" as const }),
+        settle: async () => {
+          throw new Error("socket hang up");
+        },
+      },
+    };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+    expect(response.status).toBe(502);
+    expect(JSON.parse(bodyText(response)).error).toBe("settlement_unknown");
+  });
+
+  it("refused settle gives 503 with Retry-After and no body", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = { kind: "refused", reason: "spend_ceiling" };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(response.headers["retry-after"]).toBe("60");
+    expect(bodyText(response)).not.toContain(UPSTREAM_SECRET);
+  });
+
+  it("a paused facilitator at settle gives 503 with Retry-After", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = { kind: "paused" };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(response.headers["retry-after"]).toBe("60");
+  });
+});
+
+describe("I4: facilitator failures at verify fail closed before any upstream call", () => {
+  it("I4: facilitator unavailable at verify gives 503 with Retry-After and no upstream call", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.verifyOutcome = { kind: "unavailable" };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(response.headers["retry-after"]).toBe("15");
+    expect(h.calls.upstream).toHaveLength(0);
+    expect(h.calls.settle).toBe(0);
+  });
+
+  it("I4: a facilitator that throws at verify is treated as unavailable", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const deps = {
+      ...h.deps,
+      facilitator: {
+        verify: async () => {
+          throw new Error("down");
+        },
+        settle: async () => ({ kind: "settled" as const, transaction: "x" }),
+      },
+    };
+    expect((await handlePaidRequest(request(cfg, paidHeaders(cfg)), deps)).status).toBe(503);
+  });
+
+  it("a paused facilitator at verify gives 503 with Retry-After and no upstream call", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.verifyOutcome = { kind: "paused" };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(h.calls.upstream).toHaveLength(0);
+  });
+});
+
+describe("scanner: called before forwarding, fail-closed", () => {
+  it("a scanner that blocks returns 403 and does not settle", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.scanner = { scan: async () => ({ allow: false, reason: "policy" }) };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(403);
+    expect(h.calls.upstream).toHaveLength(0);
+    expect(h.calls.settle).toBe(0);
+  });
+
+  it("a scanner that throws fails closed with 503 and no upstream call", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.scanner = {
+      scan: async () => {
+        throw new Error("scanner crashed");
+      },
+    };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(h.calls.upstream).toHaveLength(0);
+  });
+
+  it("a scanner that allows lets the request through", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.scanner = { scan: async () => ({ allow: true }) };
+    expect((await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps)).status).toBe(200);
+  });
+});
+
+describe("headers: credentials are never forwarded, cookies are never returned", () => {
+  it("the upstream never receives PAYMENT-SIGNATURE, Cookie, Authorization, Host or hop-by-hop headers", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    await handlePaidRequest(
+      request(cfg, {
+        ...paidHeaders(cfg),
+        cookie: "session=1",
+        authorization: "Bearer x",
+        host: "proxy.example.test",
+        connection: "keep-alive, x-private",
+        "x-private": "secret",
+        "keep-alive": "timeout=5",
+        accept: "application/json",
+      }),
+      h.deps,
+    );
+    const forwarded = h.calls.upstream[0]!.headers;
+    for (const forbidden of [
+      "payment-signature",
+      "cookie",
+      "authorization",
+      "host",
+      "keep-alive",
+      "x-private",
+    ]) {
+      expect(forwarded).not.toHaveProperty(forbidden);
+    }
+    expect(forwarded).toHaveProperty("accept", "application/json");
+  });
+
+  it("the buyer never receives Set-Cookie or hop-by-hop headers from the upstream", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.upstreamResult = {
+      status: 200,
+      headers: {
+        "content-type": "text/plain",
+        "set-cookie": "a=b",
+        "transfer-encoding": "chunked",
+        "x-ok": "1",
+      },
+      body: new TextEncoder().encode("ok"),
+    };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.headers).not.toHaveProperty("set-cookie");
+    expect(response.headers).not.toHaveProperty("transfer-encoding");
+    expect(response.headers).toHaveProperty("x-ok", "1");
+  });
+
+  it("sanitizers drop listed names regardless of case and Connection tokens", () => {
+    expect(
+      sanitizeRequestHeaders({ Cookie: "a", Connection: "x-a", "X-A": "1", Accept: "*/*" }),
+    ).toEqual({ accept: "*/*" });
+    expect(sanitizeResponseHeaders({ "Set-Cookie": "a", "X-B": "2" })).toEqual({ "x-b": "2" });
+  });
+});
+
+describe("I7: the flow reads only through its injected ports", () => {
+  it("I7: the receipt and the forwarded request carry no seller or server secret", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    const forwarded = JSON.stringify(h.calls.upstream);
+    expect(forwarded).not.toMatch(/ANTHROPIC|BOOTSTRAP|KV_CONFIG_REST_API_TOKEN/);
+    expect(Object.keys(response.headers).join(" ")).not.toMatch(/authorization|secret/i);
+  });
+});
