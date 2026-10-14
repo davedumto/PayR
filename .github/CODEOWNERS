@@ -1,0 +1,12 @@
+# Default: the repository owner reviews everything.
+*                         @davedumto
+
+# Environment contract and secret boundary. Changes here decide what Edge can read.
+/src/env.*.ts             @davedumto
+/src/instrumentation.ts   @davedumto
+
+# Security baseline and CI supply chain.
+/next.config.ts           @davedumto
+/.github/                 @davedumto
+/package.json             @davedumto
+/pnpm-lock.yaml           @davedumto
