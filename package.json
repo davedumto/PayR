@@ -6,7 +6,7 @@
   "description": "Sylox dashboard for PayR: a one-click x402 paywall for APIs, built on Vellar.",
   "packageManager": "pnpm@10.28.0",
   "engines": {
-    "node": ">=20.9.0 <21"
+    "node": ">=24 <25"
   },
   "scripts": {
     "dev": "next dev",
