@@ -1,0 +1,28 @@
+/*
+ * Sylox design tokens. Single source for colour and type, exposed to Tailwind
+ * through @theme so utilities such as `bg-slate-black` and `text-risk-crimson`
+ * resolve here. Dark is the only theme. Do not add colours without sign-off.
+ */
+@theme {
+  /* Core palette */
+  --color-slate-black: #0b0c0e; /* main background */
+  --color-silo-oatmeal: #f1efe9; /* primary text */
+  --color-cyber-tin: #b0b5bc; /* secondary text */
+  --color-cement-grey: #8a9099; /* structure and borders */
+  --color-risk-crimson: #ff3b30; /* accent, risk, primary action */
+  --color-risk-crimson-tint: #f98c83; /* softer crimson text */
+
+  /*
+   * Risk bands for low and moderate levels. Muted on purpose so they do not
+   * compete with crimson. Crimson is reserved for the most severe band.
+   * Colour is never the only signal: every use pairs with a text label.
+   */
+  --color-risk-low: #7ea982; /* muted green */
+  --color-risk-moderate: #d6a548; /* amber */
+  --color-risk-elevated: #d9823f; /* orange */
+
+  /* Typography, wired to the next/font variables set in src/app/fonts.ts */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-space-mono), ui-monospace, SFMono-Regular, monospace;
+  --font-display: var(--font-big-shoulders), ui-sans-serif, sans-serif;
+}
