@@ -9,7 +9,7 @@ contract. There is no proxy, no Claude call, no KV access and no auth yet.
 
 ## Requirements
 
-- Node 20 (see `.nvmrc`; `engines` requires `>=20.9 <21`)
+- Node 24 LTS (see `.nvmrc`; `engines` requires `>=24 <25`)
 - pnpm 10.28.0 (pinned by `packageManager`)
 
 ## Setup
