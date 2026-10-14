@@ -19,11 +19,19 @@ const csp = [
   "frame-ancestors 'none'",
 ].join("; ");
 
-const securityHeaders = [
+export const securityHeaders = [
   { key: "Content-Security-Policy", value: csp },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "X-Frame-Options", value: "DENY" },
+  // Two years, including subdomains. Browsers ignore this header over plain HTTP.
+  { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
+  // Deny sensors and payment APIs. WebAuthn stays on for this origin only.
+  {
+    key: "Permissions-Policy",
+    value:
+      "camera=(), microphone=(), geolocation=(), payment=(), publickey-credentials-get=(self), publickey-credentials-create=(self)",
+  },
 ];
 
 const nextConfig: NextConfig = {
