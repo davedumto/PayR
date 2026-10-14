@@ -70,20 +70,22 @@ const parseUrl = (value: string): URL | undefined => {
  * that carries a credential or a facilitator request must not travel over
  * plain http.
  */
-const secureUrl = (message: string) =>
-  z.string().refine(
-    (value) => {
-      const url = parseUrl(value);
-      if (!url) {
-        return false;
-      }
-      const isLocalTestHost =
-        process.env.NODE_ENV === "test" &&
-        (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-      return url.protocol === "https:" || (url.protocol === "http:" && isLocalTestHost);
-    },
-    { message },
-  );
+/**
+ * True for an absolute https URL, or for http to localhost in tests only. Anything
+ * that carries a credential or a facilitator request must not travel over plain http.
+ */
+export function isSecureServiceUrl(value: string): boolean {
+  const url = parseUrl(value);
+  if (!url) {
+    return false;
+  }
+  const isLocalTestHost =
+    process.env.NODE_ENV === "test" &&
+    (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+  return url.protocol === "https:" || (url.protocol === "http:" && isLocalTestHost);
+}
+
+const secureUrl = (message: string) => z.string().refine(isSecureServiceUrl, { message });
 
 export const edgeSchema = publicSchema.extend({
   VELLAR_FACILITATOR_URL: secureUrl(
