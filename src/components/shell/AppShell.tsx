@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 
 import { MobileDrawer } from "@/components/shell/MobileDrawer";
 import { NavList } from "@/components/shell/NavList";
-import { NetworkNotice } from "@/components/shell/TestnetNotice";
+import { NetworkNotice } from "@/components/shell/NetworkNotice";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { Badge } from "@/components/ui/Badge";
 
