@@ -57,10 +57,44 @@ export const publicSchema = z.object({
   }),
 });
 
+const parseUrl = (value: string): URL | undefined => {
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * An absolute URL that is https, or http to localhost in tests only. Anything
+ * that carries a credential or a facilitator request must not travel over
+ * plain http.
+ */
+const secureUrl = (message: string) =>
+  z.string().refine(
+    (value) => {
+      const url = parseUrl(value);
+      if (!url) {
+        return false;
+      }
+      const isLocalTestHost =
+        process.env.NODE_ENV === "test" &&
+        (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+      return url.protocol === "https:" || (url.protocol === "http:" && isLocalTestHost);
+    },
+    { message },
+  );
+
 export const edgeSchema = publicSchema.extend({
-  VELLAR_FACILITATOR_URL: z.url({ message: "must be an absolute URL" }),
-  KV_REST_API_URL: z.url({ message: "must be an absolute URL" }),
-  KV_REST_API_TOKEN: z.string().min(1, { message: "must not be empty" }),
+  VELLAR_FACILITATOR_URL: secureUrl(
+    "must be an absolute https URL (http is allowed for localhost in tests only)",
+  ),
+  // CONFIG: seller configs. The Edge only reads them, so its token is read-only.
+  KV_CONFIG_REST_API_URL: secureUrl("must be an absolute https URL"),
+  KV_CONFIG_READ_ONLY_TOKEN: z.string().min(1, { message: "must not be empty" }),
+  // STATE: locks and rate counters. The Edge writes these, so its token is read-write.
+  KV_STATE_REST_API_URL: secureUrl("must be an absolute https URL"),
+  KV_STATE_REST_API_TOKEN: z.string().min(1, { message: "must not be empty" }),
 });
 
 export type EdgeEnv = z.output<typeof edgeSchema>;
@@ -80,8 +114,10 @@ export function getEdgeEnv(): EdgeEnv {
   if (!cachedEdge) {
     cachedEdge = parseEdgeEnv({
       VELLAR_FACILITATOR_URL: process.env.VELLAR_FACILITATOR_URL,
-      KV_REST_API_URL: process.env.KV_REST_API_URL,
-      KV_REST_API_TOKEN: process.env.KV_REST_API_TOKEN,
+      KV_CONFIG_REST_API_URL: process.env.KV_CONFIG_REST_API_URL,
+      KV_CONFIG_READ_ONLY_TOKEN: process.env.KV_CONFIG_READ_ONLY_TOKEN,
+      KV_STATE_REST_API_URL: process.env.KV_STATE_REST_API_URL,
+      KV_STATE_REST_API_TOKEN: process.env.KV_STATE_REST_API_TOKEN,
       NEXT_PUBLIC_VELLAR_NETWORK: process.env.NEXT_PUBLIC_VELLAR_NETWORK,
     });
   }

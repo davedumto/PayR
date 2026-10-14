@@ -6,8 +6,11 @@ import { parseServerEnv, serverSchema } from "@/env.server";
 const valid: RawEnv = {
   VELLAR_FACILITATOR_URL: "https://facilitator.example.test",
   ANTHROPIC_API_KEY: "test-anthropic-key",
-  KV_REST_API_URL: "https://kv.example.test",
-  KV_REST_API_TOKEN: "test-kv-token",
+  KV_CONFIG_REST_API_URL: "https://config.kv.example.test",
+  KV_CONFIG_READ_ONLY_TOKEN: "test-config-read-token",
+  KV_CONFIG_REST_API_TOKEN: "test-config-write-token",
+  KV_STATE_REST_API_URL: "https://state.kv.example.test",
+  KV_STATE_REST_API_TOKEN: "test-state-token",
   VELLAR_BOOTSTRAP_AGENT_KEY: "test-bootstrap-key",
   ANTHROPIC_MODEL: "test-model-id",
   NEXT_PUBLIC_VELLAR_NETWORK: "testnet",
@@ -33,9 +36,9 @@ describe("parseServerEnv", () => {
   });
 
   it("fails fast and names the missing variable", () => {
-    const raw: RawEnv = { ...valid, KV_REST_API_TOKEN: undefined };
+    const raw: RawEnv = { ...valid, KV_CONFIG_REST_API_TOKEN: undefined };
     expect(() => parseServerEnv(raw)).toThrow(EnvValidationError);
-    expect(problemsFor(raw)).toEqual(["KV_REST_API_TOKEN is missing"]);
+    expect(problemsFor(raw)).toEqual(["KV_CONFIG_REST_API_TOKEN is missing"]);
   });
 
   it("treats an empty string as missing", () => {
@@ -66,7 +69,7 @@ describe("parseServerEnv", () => {
   it("never echoes a secret value in the error message", () => {
     const secret = "sk-live-do-not-print-0123456789";
     try {
-      parseServerEnv({ ...valid, KV_REST_API_URL: secret });
+      parseServerEnv({ ...valid, KV_CONFIG_REST_API_URL: secret });
       expect.fail("expected validation to fail");
     } catch (error) {
       expect(String(error)).not.toContain(secret);

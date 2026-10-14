@@ -21,8 +21,11 @@ jobs:
       # Placeholder values so the build can validate configuration. Not secrets.
       VELLAR_FACILITATOR_URL: https://facilitator.example.invalid
       ANTHROPIC_API_KEY: ci-placeholder
-      KV_REST_API_URL: https://kv.example.invalid
-      KV_REST_API_TOKEN: ci-placeholder
+      KV_CONFIG_REST_API_URL: https://config-kv.example.invalid
+      KV_CONFIG_READ_ONLY_TOKEN: ci-placeholder
+      KV_CONFIG_REST_API_TOKEN: ci-placeholder
+      KV_STATE_REST_API_URL: https://state-kv.example.invalid
+      KV_STATE_REST_API_TOKEN: ci-placeholder
       VELLAR_BOOTSTRAP_AGENT_KEY: ci-placeholder
       ANTHROPIC_MODEL: ci-placeholder
       NEXT_PUBLIC_VELLAR_NETWORK: testnet

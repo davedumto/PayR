@@ -10,6 +10,8 @@ import { edgeSchema, type EdgeEnv, type RawEnv, validateEnv } from "@/env.edge";
  */
 
 const serverOnlySchema = z.object({
+  // CONFIG write token. Only the server may write seller configs.
+  KV_CONFIG_REST_API_TOKEN: z.string().min(1, { message: "must not be empty" }),
   ANTHROPIC_API_KEY: z.string().min(1, { message: "must not be empty" }),
   VELLAR_BOOTSTRAP_AGENT_KEY: z.string().min(1, { message: "must not be empty" }),
   ANTHROPIC_MODEL: z.string().min(1, { message: "must not be empty" }),
@@ -33,8 +35,11 @@ export function getServerEnv(): ServerEnv {
   if (!cachedServer) {
     cachedServer = parseServerEnv({
       VELLAR_FACILITATOR_URL: process.env.VELLAR_FACILITATOR_URL,
-      KV_REST_API_URL: process.env.KV_REST_API_URL,
-      KV_REST_API_TOKEN: process.env.KV_REST_API_TOKEN,
+      KV_CONFIG_REST_API_URL: process.env.KV_CONFIG_REST_API_URL,
+      KV_CONFIG_READ_ONLY_TOKEN: process.env.KV_CONFIG_READ_ONLY_TOKEN,
+      KV_STATE_REST_API_URL: process.env.KV_STATE_REST_API_URL,
+      KV_STATE_REST_API_TOKEN: process.env.KV_STATE_REST_API_TOKEN,
+      KV_CONFIG_REST_API_TOKEN: process.env.KV_CONFIG_REST_API_TOKEN,
       NEXT_PUBLIC_VELLAR_NETWORK: process.env.NEXT_PUBLIC_VELLAR_NETWORK,
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
       VELLAR_BOOTSTRAP_AGENT_KEY: process.env.VELLAR_BOOTSTRAP_AGENT_KEY,

@@ -4,12 +4,18 @@ import { describe, expect, it } from "vitest";
 
 import { EnvValidationError, getPublicNetwork, parseEdgeEnv, type RawEnv } from "@/env.edge";
 
-const SERVER_ONLY = ["ANTHROPIC_API_KEY", "VELLAR_BOOTSTRAP_AGENT_KEY"] as const;
+const SERVER_ONLY = [
+  "ANTHROPIC_API_KEY",
+  "VELLAR_BOOTSTRAP_AGENT_KEY",
+  "KV_CONFIG_REST_API_TOKEN",
+] as const;
 
 const valid: RawEnv = {
   VELLAR_FACILITATOR_URL: "https://facilitator.example.test",
-  KV_REST_API_URL: "https://kv.example.test",
-  KV_REST_API_TOKEN: "test-kv-token",
+  KV_CONFIG_REST_API_URL: "https://config.kv.example.test",
+  KV_CONFIG_READ_ONLY_TOKEN: "test-config-read-token",
+  KV_STATE_REST_API_URL: "https://state.kv.example.test",
+  KV_STATE_REST_API_TOKEN: "test-state-token",
   NEXT_PUBLIC_VELLAR_NETWORK: "testnet",
 };
 
@@ -44,8 +50,14 @@ describe("parseEdgeEnv", () => {
   });
 
   it("names a missing Edge variable", () => {
-    expect(problemsFor({ ...valid, KV_REST_API_TOKEN: undefined })).toEqual([
-      "KV_REST_API_TOKEN is missing",
+    expect(problemsFor({ ...valid, KV_STATE_REST_API_TOKEN: undefined })).toEqual([
+      "KV_STATE_REST_API_TOKEN is missing",
+    ]);
+  });
+
+  it("requires a read-only token for the config store", () => {
+    expect(problemsFor({ ...valid, KV_CONFIG_READ_ONLY_TOKEN: undefined })).toEqual([
+      "KV_CONFIG_READ_ONLY_TOKEN is missing",
     ]);
   });
 
@@ -55,8 +67,31 @@ describe("parseEdgeEnv", () => {
     expect(problems[0]).toMatch(/^VELLAR_FACILITATOR_URL /);
   });
 
+  it("rejects plain http for the facilitator outside localhost", () => {
+    const problems = problemsFor({
+      ...valid,
+      VELLAR_FACILITATOR_URL: "http://facilitator.example.test",
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/^VELLAR_FACILITATOR_URL must be an absolute https URL/);
+  });
+
+  it("allows http to localhost in tests", () => {
+    expect(() =>
+      parseEdgeEnv({ ...valid, VELLAR_FACILITATOR_URL: "http://localhost:4010" }),
+    ).not.toThrow();
+  });
+
+  it.each(["KV_CONFIG_REST_API_URL", "KV_STATE_REST_API_URL"] as const)(
+    "rejects plain http for %s",
+    (key) => {
+      const problems = problemsFor({ ...valid, [key]: "http://kv.example.test" });
+      expect(problems).toHaveLength(1);
+      expect(problems[0]?.startsWith(`${key} must be an absolute https URL`)).toBe(true);
+    },
+  );
+
   it("does not require server secrets", () => {
-    // The Edge set must validate with no server-only variables present at all.
     expect(() => parseEdgeEnv(valid)).not.toThrow();
   });
 });
