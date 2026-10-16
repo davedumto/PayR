@@ -24,6 +24,7 @@ import type { SettleOutcome, VerifyOutcome } from "@/proxy/facilitator";
  *   I5  The stored config is re-validated on every read.
  *   I6  Retry decisions follow the classified settle outcome, and settle is never repeated.
  *   I7  The flow holds no key that can move funds. Its only inputs are injected ports.
+ *   I8  A guard failure never reaches the upstream and never triggers a settle.
  */
 
 export const LOCK_TTL_SECONDS = 300;
