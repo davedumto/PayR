@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseProxyConfig, type ProxyConfig } from "@/proxy/config";
 import { encodeHeader, requirementsFor } from "@/proxy/challenge";
 import type { SettleOutcome, VerifyOutcome } from "@/proxy/facilitator";
+import { runGuard } from "@/proxy/guard";
 import {
   type ConfigStore,
   type FacilitatorPort,
@@ -10,7 +11,7 @@ import {
   type FlowDeps,
   type PayloadScanner,
   type ProxyRequest,
-  sanitizeRequestHeaders,
+  SCANNER_TIMEOUT_MS,
   sanitizeResponseHeaders,
   type StateKv,
   type UpstreamFetcher,
@@ -626,11 +627,19 @@ describe("headers: credentials are never forwarded, cookies are never returned",
     expect(response.headers).toHaveProperty("x-ok", "1");
   });
 
-  it("sanitizers drop listed names regardless of case and Connection tokens", () => {
-    expect(
-      sanitizeRequestHeaders({ Cookie: "a", Connection: "x-a", "X-A": "1", Accept: "*/*" }),
-    ).toEqual({ accept: "*/*" });
+  it("request headers pass the guard allowlist, and response sanitizing drops listed names and Connection tokens", () => {
+    const guarded = runGuard({
+      method: "GET",
+      path: "/x",
+      headers: { Cookie: "a", Connection: "x-a", "X-A": "1", Accept: "*/*" },
+      body: new Uint8Array(),
+      config: { allowedMethods: ["GET"], maxRequestBytes: 1024, allowedContentTypes: [] },
+    });
+    expect(guarded.ok && guarded.headers).toEqual({ accept: "*/*" });
     expect(sanitizeResponseHeaders({ "Set-Cookie": "a", "X-B": "2" })).toEqual({ "x-b": "2" });
+    expect(sanitizeResponseHeaders({ Connection: "x-c", "X-C": "3", "X-D": "4" })).toEqual({
+      "x-d": "4",
+    });
   });
 });
 
@@ -895,4 +904,58 @@ describe("B2: an ambiguous settle is logged and never treated as nothing spent",
     await handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
     expect(events).toEqual([]);
   });
+});
+
+describe("I8: a guard failure never reaches the upstream and never triggers a settle", () => {
+  it.each([
+    ["a disallowed method", { method: "DELETE" }, {}, 405],
+    ["a path over the length cap", { path: `/${"a".repeat(2048)}` }, {}, 414],
+    ["a body over the byte cap", { method: "POST", body: new Uint8Array(65_537) }, {}, 413],
+    [
+      "a disallowed content type",
+      { method: "POST", body: new TextEncoder().encode("<a/>") },
+      { "content-type": "text/html" },
+      415,
+    ],
+    [
+      "invalid JSON under a JSON content type",
+      { method: "POST", body: new TextEncoder().encode("{bad") },
+      { "content-type": "application/json" },
+      400,
+    ],
+    ["a NUL byte in the path", { path: "/a\u0000b" }, {}, 400],
+  ])(
+    "I8: %s gets a rejection with no verify, upstream or settle call",
+    async (_n, over, headers, status) => {
+      const cfg = config({ allowedMethods: ["GET", "POST"] });
+      const h = harness(cfg);
+      const response = await handlePaidRequest(
+        request(cfg, { ...paidHeaders(cfg), ...headers }, over as Partial<ProxyRequest>),
+        h.deps,
+      );
+      expect(response.status).toBe(status);
+      expect(h.calls.verify).toBe(0);
+      expect(h.calls.upstream).toHaveLength(0);
+      expect(h.calls.settle).toBe(0);
+    },
+  );
+});
+
+describe("scanner timeout: a scanner that never answers blocks the request", () => {
+  it(
+    "returns 503 scanner_unavailable with no upstream call, and releases the lock",
+    async () => {
+      const cfg = config();
+      const h = harness(cfg);
+      h.scanner = { scan: () => new Promise<never>(() => undefined) };
+      const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+      expect(response.status).toBe(503);
+      expect(JSON.parse(bodyText(response)).error).toBe("scanner_unavailable");
+      expect(h.calls.upstream).toHaveLength(0);
+      expect(h.calls.settle).toBe(0);
+      h.scanner = { scan: async () => ({ allow: true }) };
+      expect((await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps)).status).toBe(200);
+    },
+    SCANNER_TIMEOUT_MS + 5_000,
+  );
 });

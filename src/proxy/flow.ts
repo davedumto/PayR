@@ -1,6 +1,7 @@
 import { canonicalHash } from "@/proxy/canonical";
 import { parseProxyConfig, type ProxyConfig } from "@/proxy/config";
 import { buildUpstreamUrl } from "@/proxy/url";
+import { runGuard } from "@/proxy/guard";
 import {
   buildPaymentRequired,
   type ParsedSignature,
@@ -36,13 +37,6 @@ const HOP_BY_HOP = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
-]);
-const NEVER_FORWARD_REQUEST = new Set([
-  "payment-signature",
-  "cookie",
-  "authorization",
-  "host",
-  "content-length",
 ]);
 const NEVER_RETURN_RESPONSE = new Set(["set-cookie", "content-length"]);
 
@@ -191,32 +185,17 @@ function termsMatch(
   );
 }
 
-/** Header names listed in a Connection header, lowercased, whatever the casing of the Connection header. */
+/** Header names listed in a Connection header. Those are hop-by-hop too. */
 function connectionTokensOf(headers: Headers): Set<string> {
-  const value = Object.entries(headers)
-    .filter(([name]) => name.toLowerCase() === "connection")
-    .map(([, headerValue]) => headerValue)
-    .join(",");
-  return new Set(
-    value
-      .split(",")
-      .map((token) => token.trim().toLowerCase())
-      .filter((token) => token !== ""),
-  );
-}
-
-/** Drops credentials, hop-by-hop headers and framing headers before the upstream call. */
-export function sanitizeRequestHeaders(headers: Headers): Record<string, string> {
-  const connectionTokens = connectionTokensOf(headers);
-  const out: Record<string, string> = {};
+  const tokens = new Set<string>();
   for (const [name, value] of Object.entries(headers)) {
-    const key = name.toLowerCase();
-    if (NEVER_FORWARD_REQUEST.has(key) || HOP_BY_HOP.has(key) || connectionTokens.has(key)) {
-      continue;
+    if (name.toLowerCase() !== "connection") continue;
+    for (const token of value.split(",")) {
+      const trimmed = token.trim().toLowerCase();
+      if (trimmed.length > 0) tokens.add(trimmed);
     }
-    out[key] = value;
   }
-  return out;
+  return tokens;
 }
 
 /** Drops Set-Cookie and hop-by-hop headers from the upstream response. */
@@ -260,6 +239,17 @@ async function loadConfig(
   return { config: parsed.config };
 }
 
+/** Scanner budget. A scanner that does not answer in time blocks the request. */
+export const SCANNER_TIMEOUT_MS = 2000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("scanner timed out")), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /** Runs one paid request through the state machine. Never throws. */
 export async function handlePaidRequest(
   request: ProxyRequest,
@@ -271,14 +261,25 @@ export async function handlePaidRequest(
   }
   const { config } = loaded;
 
-  if (!config.allowedMethods.includes(request.method as ProxyConfig["allowedMethods"][number])) {
-    return {
-      ...json(405, { error: "method_not_allowed" }),
-      headers: { "content-type": "application/json", allow: config.allowedMethods.join(", ") },
-    };
-  }
-  if (request.body.byteLength > config.maxRequestBytes) {
-    return json(413, { error: "request_too_large" });
+  // The guard runs first, before any payment logic. I8: a guard failure never reaches
+  // the upstream and never triggers a settle.
+  const guard = runGuard({
+    method: request.method,
+    path: request.path,
+    headers: request.headers,
+    body: request.body,
+    config: {
+      allowedMethods: config.allowedMethods,
+      maxRequestBytes: config.maxRequestBytes,
+      allowedContentTypes: config.allowedContentTypes,
+    },
+  });
+  if (!guard.ok) {
+    return json(
+      guard.status,
+      { error: "request_rejected", reason: guard.reason },
+      guard.status === 405 ? { allow: config.allowedMethods.join(", ") } : {},
+    );
   }
   const target = buildUpstreamUrl(config.targetUrl, request.path);
   if (!target.ok) {
@@ -322,7 +323,16 @@ export async function handlePaidRequest(
   }
   const lock: LockState = { key: lockKey, upstreamCalled: false };
   try {
-    return await runAfterLock(config, request, parsed.signature, required, target.url, deps, lock);
+    return await runAfterLock(
+      config,
+      request,
+      parsed.signature,
+      required,
+      target.url,
+      guard.headers,
+      deps,
+      lock,
+    );
   } finally {
     // B3: release the lock when no upstream call happened, so a legitimate retry is not answered 409.
     if (!lock.upstreamCalled) {
@@ -338,6 +348,7 @@ async function runAfterLock(
   signature: ParsedSignature,
   required: PaymentRequirements,
   target: URL,
+  forwardHeaders: Readonly<Record<string, string>>,
   deps: FlowDeps,
   lock: LockState,
 ): Promise<ProxyResponse> {
@@ -368,17 +379,18 @@ async function runAfterLock(
     return challenge(config, request, "payment_invalid", { reason: verdict.reason });
   }
 
-  const forwardHeaders = sanitizeRequestHeaders(request.headers);
-
   if (deps.scanner) {
     let scan;
     try {
-      scan = await deps.scanner.scan({
-        method: request.method,
-        path: request.path,
-        headers: forwardHeaders,
-        body: request.body,
-      });
+      scan = await withTimeout(
+        deps.scanner.scan({
+          method: request.method,
+          path: request.path,
+          headers: forwardHeaders,
+          body: request.body,
+        }),
+        SCANNER_TIMEOUT_MS,
+      );
     } catch {
       // Fail closed: a scanner error blocks the request.
       return unavailable(503, "scanner_unavailable", 30);

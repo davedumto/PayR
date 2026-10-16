@@ -87,6 +87,12 @@ export const ProxyConfigSchema = z
       .min(1)
       .default(["GET", "POST"]),
     maxRequestBytes: z.number().int().min(0).max(1_048_576).default(65_536),
+    // Content types the guard accepts in a request body. Parameters such as charset are ignored when matching.
+    allowedContentTypes: z
+      .array(z.string().regex(/^[a-z]+\/[a-z0-9.+-]+$/i, { message: "must be a type/subtype" }))
+      .min(1)
+      .max(10)
+      .default(["application/json", "text/plain", "application/x-www-form-urlencoded"]),
     maxResponseBytes: z.number().int().min(1).max(5_242_880).default(1_048_576),
     upstreamTimeoutMs: z.number().int().min(1).max(TIMEOUT_LIMITS.upstreamMs).default(10_000),
     // verify is quick; the facilitator answers verify without retries.
