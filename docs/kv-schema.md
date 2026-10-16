@@ -21,12 +21,15 @@ A seller's proxy config as JSON. `{id}` matches `^[a-z0-9][a-z0-9-]{2,62}$`.
 - Read on every request and validated again on read. A parse failure fails closed
   with 503. The proxy never trusts a stored config.
 - No TTL. Deleted by the server when a seller removes an endpoint.
+- `allowedMethods` defaults to `["GET", "HEAD"]`. Adding `POST`, `PUT`, `PATCH` or
+  `DELETE` requires `sideEffectsAcknowledged: true` (B5), which the seller sets knowingly.
 
 ### `lock:{sha256}` (STATE store)
 
 A replay lock for one `PAYMENT-SIGNATURE` value.
 
-- `{sha256}` is the lowercase hex SHA-256 of the raw header string.
+- `{sha256}` is the lowercase hex SHA-256 of the canonical JSON of the signed payload
+  (sorted keys), so re-encoded copies of one payment map to the same key (B3).
 - Value: `"1"`.
 - Written with `SET NX` and a TTL, so only one request per signature can reach
   the upstream (invariant I3). A duplicate gets 409 and never reaches upstream.

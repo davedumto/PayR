@@ -35,7 +35,8 @@ describe("ProxyConfigSchema", () => {
     const result = parseProxyConfig(validInput);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.config.allowedMethods).toEqual(["GET", "POST"]);
+      expect(result.config.allowedMethods).toEqual(["GET", "HEAD"]);
+      expect(result.config.sideEffectsAcknowledged).toBe(false);
       expect(result.config.maxRequestBytes).toBe(65_536);
       expect(result.config.maxResponseBytes).toBe(1_048_576);
       expect(result.config.upstreamTimeoutMs).toBe(10_000);
@@ -197,5 +198,38 @@ describe("B2: split timeouts and the request budget", () => {
   it("worst-case budget fits inside the 120 s function duration in ADR 0001", () => {
     expect(worstCaseBudgetMs()).toBe(105_000);
     expect(worstCaseBudgetMs()).toBeLessThanOrEqual(120_000);
+  });
+});
+
+describe("B5: read-only by default; side-effecting methods need an explicit acknowledgement", () => {
+  it.each([["POST"], ["PUT"], ["PATCH"], ["DELETE"]])(
+    "%s without sideEffectsAcknowledged is rejected",
+    (method) => {
+      const issues = issuesFor({ allowedMethods: ["GET", method] });
+      expect(issues.join(" ")).toMatch(/sideEffectsAcknowledged/);
+    },
+  );
+
+  it.each([["POST"], ["DELETE"]])("%s is accepted once acknowledged", (method) => {
+    const result = parseProxyConfig({
+      ...validInput,
+      allowedMethods: ["GET", method],
+      sideEffectsAcknowledged: true,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("GET and HEAD need no acknowledgement", () => {
+    expect(issuesFor({ allowedMethods: ["GET", "HEAD"] })).toEqual([]);
+  });
+
+  it("an acknowledgement with only read methods is accepted, not required", () => {
+    expect(issuesFor({ allowedMethods: ["GET"], sideEffectsAcknowledged: true })).toEqual([]);
+  });
+
+  it("a non-boolean acknowledgement is rejected", () => {
+    expect(issuesFor({ sideEffectsAcknowledged: "yes" }).join(" ")).toMatch(
+      /sideEffectsAcknowledged/,
+    );
   });
 });

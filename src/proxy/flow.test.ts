@@ -194,7 +194,11 @@ describe("unpaid and malformed requests (no facilitator or upstream call)", () =
   });
 
   it("a request body over the limit gets 413 before any payment check", async () => {
-    const cfg = config({ maxRequestBytes: 4 });
+    const cfg = config({
+      maxRequestBytes: 4,
+      allowedMethods: ["GET", "POST"],
+      sideEffectsAcknowledged: true,
+    });
     const h = harness(cfg);
     const response = await handlePaidRequest(
       request(cfg, {}, { method: "POST", body: new Uint8Array(5) }),
@@ -927,7 +931,7 @@ describe("I8: a guard failure never reaches the upstream and never triggers a se
   ])(
     "I8: %s gets a rejection with no verify, upstream or settle call",
     async (_n, over, headers, status) => {
-      const cfg = config({ allowedMethods: ["GET", "POST"] });
+      const cfg = config({ allowedMethods: ["GET", "POST"], sideEffectsAcknowledged: true });
       const h = harness(cfg);
       const response = await handlePaidRequest(
         request(cfg, { ...paidHeaders(cfg), ...headers }, over as Partial<ProxyRequest>),

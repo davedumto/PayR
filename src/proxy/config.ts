@@ -23,6 +23,9 @@ export function worstCaseBudgetMs(): number {
   return TIMEOUT_LIMITS.verifyMs + TIMEOUT_LIMITS.upstreamMs + TIMEOUT_LIMITS.settleMs;
 }
 
+/** Methods that can change the seller's upstream state. */
+const SIDE_EFFECT_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 const DECIMAL_PATTERN = /^(0|[1-9]\d*)(?:\.(\d{1,7}))?$/;
 
 /**
@@ -82,10 +85,12 @@ export const ProxyConfigSchema = z
     description: z.string().regex(/^[\x20-\x7e]{1,256}$/, {
       message: "must be 1 to 256 printable ASCII characters",
     }),
+    // Read-only by default. Methods that can change the seller's upstream state need an explicit acknowledgement.
     allowedMethods: z
       .array(z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]))
       .min(1)
-      .default(["GET", "POST"]),
+      .default(["GET", "HEAD"]),
+    sideEffectsAcknowledged: z.boolean().default(false),
     maxRequestBytes: z.number().int().min(0).max(1_048_576).default(65_536),
     // Content types the guard accepts in a request body. Parameters such as charset are ignored when matching.
     allowedContentTypes: z
@@ -100,7 +105,17 @@ export const ProxyConfigSchema = z
     // settle can take up to 2 facilitator retries of 6 s each before it answers.
     settleTimeoutMs: z.number().int().min(1).max(TIMEOUT_LIMITS.settleMs).default(45_000),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const sideEffecting = value.allowedMethods.some((method) => SIDE_EFFECT_METHODS.has(method));
+    if (sideEffecting && !value.sideEffectsAcknowledged) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sideEffectsAcknowledged"],
+        message: "must be true when POST, PUT, PATCH or DELETE is allowed",
+      });
+    }
+  });
 
 export type ProxyConfig = z.output<typeof ProxyConfigSchema>;
 
