@@ -27,18 +27,13 @@ import type { SettleOutcome, VerifyOutcome } from "@/proxy/facilitator";
  */
 
 export const LOCK_TTL_SECONDS = 300;
-const HOP_BY_HOP = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "proxy-connection",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
+/** The only upstream response headers the buyer receives (B6). Everything else is dropped. */
+const RESPONSE_HEADER_ALLOWLIST = new Set([
+  "content-type",
+  "content-language",
+  "content-disposition",
+  "x-request-id",
 ]);
-const NEVER_RETURN_RESPONSE = new Set(["set-cookie", "content-length"]);
 
 export type Headers = Readonly<Record<string, string>>;
 
@@ -185,29 +180,14 @@ function termsMatch(
   );
 }
 
-/** Header names listed in a Connection header. Those are hop-by-hop too. */
-function connectionTokensOf(headers: Headers): Set<string> {
-  const tokens = new Set<string>();
-  for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() !== "connection") continue;
-    for (const token of value.split(",")) {
-      const trimmed = token.trim().toLowerCase();
-      if (trimmed.length > 0) tokens.add(trimmed);
-    }
-  }
-  return tokens;
-}
-
-/** Drops Set-Cookie and hop-by-hop headers from the upstream response. */
+/** Keeps only allowlisted upstream response headers (B6). Names are matched case-insensitively. */
 export function sanitizeResponseHeaders(headers: Headers): Record<string, string> {
-  const connectionTokens = connectionTokensOf(headers);
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
     const key = name.toLowerCase();
-    if (NEVER_RETURN_RESPONSE.has(key) || HOP_BY_HOP.has(key) || connectionTokens.has(key)) {
-      continue;
+    if (RESPONSE_HEADER_ALLOWLIST.has(key)) {
+      out[key] = value;
     }
-    out[key] = value;
   }
   return out;
 }
@@ -454,7 +434,13 @@ async function runAfterLock(
       });
       return {
         status: upstream.status,
-        headers: { ...sanitizeResponseHeaders(upstream.headers), "payment-response": receipt },
+        headers: {
+          ...sanitizeResponseHeaders(upstream.headers),
+          "payment-response": receipt,
+          // B6: a paid body is never stored by a shared cache, and varies on the payment.
+          "cache-control": "private, no-store",
+          vary: "payment-signature",
+        },
         body: upstream.body,
       };
     }

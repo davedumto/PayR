@@ -612,26 +612,71 @@ describe("headers: credentials are never forwarded, cookies are never returned",
     expect(forwarded).toHaveProperty("accept", "application/json");
   });
 
-  it("the buyer never receives Set-Cookie or hop-by-hop headers from the upstream", async () => {
+  it.each([
+    ["set-cookie", "a=b"],
+    ["transfer-encoding", "chunked"],
+    ["link", "<https://evil.test>; rel=preload"],
+    ["content-location", "/elsewhere"],
+    ["location", "https://elsewhere.test/"],
+    ["server", "upstream/1.0"],
+    ["via", "1.1 internal"],
+    ["x-powered-by", "PHP/8"],
+    ["access-control-allow-origin", "*"],
+    ["etag", '"abc"'],
+    ["last-modified", "Mon, 01 Jan 2024 00:00:00 GMT"],
+    ["x-internal-trace", "trace-id"],
+  ])("B6: the buyer never receives upstream header %s", async (name, value) => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.upstreamResult = {
+      status: 200,
+      headers: { "content-type": "text/plain", [name]: value },
+      body: new TextEncoder().encode("ok"),
+    };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(Object.keys(response.headers).map((k) => k.toLowerCase())).not.toContain(name);
+  });
+
+  it("B6: the allowlisted headers pass through", async () => {
     const cfg = config();
     const h = harness(cfg);
     h.upstreamResult = {
       status: 200,
       headers: {
         "content-type": "text/plain",
-        "set-cookie": "a=b",
-        "transfer-encoding": "chunked",
-        "x-ok": "1",
+        "content-language": "pt",
+        "content-disposition": "inline",
+        "x-request-id": "req-1",
       },
       body: new TextEncoder().encode("ok"),
     };
     const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
-    expect(response.headers).not.toHaveProperty("set-cookie");
-    expect(response.headers).not.toHaveProperty("transfer-encoding");
-    expect(response.headers).toHaveProperty("x-ok", "1");
+    expect(response.headers).toMatchObject({
+      "content-type": "text/plain",
+      "content-language": "pt",
+      "content-disposition": "inline",
+      "x-request-id": "req-1",
+    });
   });
 
-  it("request headers pass the guard allowlist, and response sanitizing drops listed names and Connection tokens", () => {
+  it("B6: a paid 2xx response is private, no-store and varies on the payment", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(response.headers["vary"]).toBe("payment-signature");
+  });
+
+  it("B6: a non-paid response carries no upstream cache headers", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = { kind: "refused", reason: "x" };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.headers["cache-control"]).toBeUndefined();
+  });
+
+  it("B6: request and response sanitizers match the allowlist, not a denylist", () => {
     const guarded = runGuard({
       method: "GET",
       path: "/x",
@@ -640,10 +685,9 @@ describe("headers: credentials are never forwarded, cookies are never returned",
       config: { allowedMethods: ["GET"], maxRequestBytes: 1024, allowedContentTypes: [] },
     });
     expect(guarded.ok && guarded.headers).toEqual({ accept: "*/*" });
-    expect(sanitizeResponseHeaders({ "Set-Cookie": "a", "X-B": "2" })).toEqual({ "x-b": "2" });
-    expect(sanitizeResponseHeaders({ Connection: "x-c", "X-C": "3", "X-D": "4" })).toEqual({
-      "x-d": "4",
-    });
+    expect(
+      sanitizeResponseHeaders({ "Set-Cookie": "a", "X-B": "2", "Content-Type": "x/y" }),
+    ).toEqual({ "content-type": "x/y" });
   });
 });
 
