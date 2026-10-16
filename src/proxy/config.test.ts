@@ -5,6 +5,7 @@ import {
   parseDecimalToBaseUnits,
   parseProxyConfig,
   ProxyConfigSchema,
+  worstCaseBudgetMs,
 } from "@/proxy/config";
 
 // Stellar test vectors from @stellar/stellar-base (see strkey.test.ts).
@@ -38,7 +39,8 @@ describe("ProxyConfigSchema", () => {
       expect(result.config.maxRequestBytes).toBe(65_536);
       expect(result.config.maxResponseBytes).toBe(1_048_576);
       expect(result.config.upstreamTimeoutMs).toBe(10_000);
-      expect(result.config.facilitatorTimeoutMs).toBe(5_000);
+      expect(result.config.verifyTimeoutMs).toBe(5_000);
+      expect(result.config.settleTimeoutMs).toBe(45_000);
     }
   });
 
@@ -173,5 +175,27 @@ describe("parseDecimalToBaseUnits", () => {
   it("rejects a JavaScript number, which may already be a float", () => {
     expect(() => parseDecimalToBaseUnits(1.5)).toThrow(TypeError);
     expect(() => parseDecimalToBaseUnits(1)).toThrow(TypeError);
+  });
+});
+
+describe("B2: split timeouts and the request budget", () => {
+  it("rejects the old single facilitatorTimeoutMs key", () => {
+    expect(issuesFor({ facilitatorTimeoutMs: 5000 }).join(" ")).toMatch(/unrecognized/i);
+  });
+
+  it("caps settle at 60 s and verify at 15 s", () => {
+    expect(issuesFor({ settleTimeoutMs: 60_001 }).join(" ")).toMatch(/settleTimeoutMs/);
+    expect(issuesFor({ settleTimeoutMs: 60_000 })).toEqual([]);
+    expect(issuesFor({ verifyTimeoutMs: 15_001 }).join(" ")).toMatch(/verifyTimeoutMs/);
+  });
+
+  it("defaults settle to 45 s, so the facilitator's own retries fit", () => {
+    const result = parseProxyConfig(validInput);
+    expect(result.ok && result.config.settleTimeoutMs).toBe(45_000);
+  });
+
+  it("worst-case budget fits inside the 120 s function duration in ADR 0001", () => {
+    expect(worstCaseBudgetMs()).toBe(105_000);
+    expect(worstCaseBudgetMs()).toBeLessThanOrEqual(120_000);
   });
 });

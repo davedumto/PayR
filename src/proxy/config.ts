@@ -15,6 +15,14 @@ export const MAX_PRICE_BASE_UNITS = 10n ** 15n;
 
 export const USDC_DECIMALS = 7;
 
+/** Timeout maxima in milliseconds. The request budget (ADR 0001) is derived from these. */
+export const TIMEOUT_LIMITS = { verifyMs: 15_000, upstreamMs: 30_000, settleMs: 60_000 } as const;
+
+/** Worst case for one paid request: verify + upstream + settle. The serving function needs at least this, plus margin. */
+export function worstCaseBudgetMs(): number {
+  return TIMEOUT_LIMITS.verifyMs + TIMEOUT_LIMITS.upstreamMs + TIMEOUT_LIMITS.settleMs;
+}
+
 const DECIMAL_PATTERN = /^(0|[1-9]\d*)(?:\.(\d{1,7}))?$/;
 
 /**
@@ -80,8 +88,11 @@ export const ProxyConfigSchema = z
       .default(["GET", "POST"]),
     maxRequestBytes: z.number().int().min(0).max(1_048_576).default(65_536),
     maxResponseBytes: z.number().int().min(1).max(5_242_880).default(1_048_576),
-    upstreamTimeoutMs: z.number().int().min(1).max(30_000).default(10_000),
-    facilitatorTimeoutMs: z.number().int().min(1).max(15_000).default(5_000),
+    upstreamTimeoutMs: z.number().int().min(1).max(TIMEOUT_LIMITS.upstreamMs).default(10_000),
+    // verify is quick; the facilitator answers verify without retries.
+    verifyTimeoutMs: z.number().int().min(1).max(TIMEOUT_LIMITS.verifyMs).default(5_000),
+    // settle can take up to 2 facilitator retries of 6 s each before it answers.
+    settleTimeoutMs: z.number().int().min(1).max(TIMEOUT_LIMITS.settleMs).default(45_000),
   })
   .strict();
 

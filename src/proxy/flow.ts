@@ -106,6 +106,13 @@ export interface UpstreamFetcher {
   ): Promise<UpstreamResponse>;
 }
 
+/** Logs only identifiers and classified reasons. Never a signature or a secret. */
+export interface ProxyLogger {
+  warn(event: string, fields: Readonly<Record<string, string | number | boolean | null>>): void;
+}
+
+export const noopLogger: ProxyLogger = { warn: () => undefined };
+
 export interface Clock {
   now(): number;
 }
@@ -131,6 +138,7 @@ export type FlowDeps = {
   readonly upstream: UpstreamFetcher;
   readonly clock: Clock;
   readonly scanner?: PayloadScanner;
+  readonly logger?: ProxyLogger;
 };
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): ProxyResponse {
@@ -410,8 +418,16 @@ async function runAfterLock(
   try {
     outcome = await deps.facilitator.settle(facilitatorRequest());
   } catch {
-    // An unreadable settle may have moved funds, so it is terminal.
+    // An unreadable settle may have moved funds, so it is terminal. Logged, never retried.
+    (deps.logger ?? noopLogger).warn("settle_unknown", { proxy_id: config.id });
     return json(502, { error: "settlement_unknown", transaction: null });
+  }
+  if (outcome.kind === "terminal_charged" && outcome.reason.startsWith("ambiguous")) {
+    // B2: a timed-out or unreadable settle may have been submitted. Log it, never treat it as nothing spent.
+    (deps.logger ?? noopLogger).warn("settle_ambiguous", {
+      proxy_id: config.id,
+      reason: outcome.reason,
+    });
   }
 
   switch (outcome.kind) {

@@ -819,3 +819,80 @@ describe("B1: the upstream URL is built from the seller's base path, never from 
     expect(h.calls.upstream[0]?.url).toBe("https://api.example.com/v1/forecast?city=lisbon");
   });
 });
+
+describe("B2: an ambiguous settle is logged and never treated as nothing spent", () => {
+  function loggedDeps(h: Harness) {
+    const events: { event: string; fields: Record<string, unknown> }[] = [];
+    return {
+      events,
+      deps: {
+        ...h.deps,
+        logger: {
+          warn: (event: string, fields: Record<string, unknown>) => events.push({ event, fields }),
+        },
+      } as FlowDeps,
+    };
+  }
+
+  it("a settle that times out (no response) is logged as settle_ambiguous and never retried", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = {
+      kind: "terminal_charged",
+      transaction: null,
+      reason: "ambiguous: no response",
+    };
+    const { deps, events } = loggedDeps(h);
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+    expect(response.status).toBe(502);
+    expect(h.calls.settle).toBe(1);
+    expect(events.map((e) => e.event)).toEqual(["settle_ambiguous"]);
+  });
+
+  it("logs carry the proxy id and reason, never the signature or the target URL", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = {
+      kind: "terminal_charged",
+      transaction: null,
+      reason: "ambiguous: no response",
+    };
+    const { deps, events } = loggedDeps(h);
+    const signature = paidHeaders(cfg)["payment-signature"]!;
+    await handlePaidRequest(request(cfg, { "payment-signature": signature }), deps);
+    const text = JSON.stringify(events);
+    expect(text).not.toContain(signature);
+    expect(text).not.toContain("api.example.com");
+    expect(events[0]?.fields).toEqual({
+      proxy_id: "weather-api",
+      reason: "ambiguous: no response",
+    });
+  });
+
+  it("an unreadable settle that throws is logged as settle_unknown", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    const { events, deps: loggedBase } = loggedDeps(h);
+    const deps = {
+      ...loggedBase,
+      facilitator: {
+        verify: async () => ({ kind: "valid" as const }),
+        settle: async () => {
+          throw new Error("socket hang up");
+        },
+      },
+    };
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+    expect(response.status).toBe(502);
+    expect(events.map((e) => e.event)).toEqual(["settle_unknown"]);
+  });
+
+  it("a clean retry_safe settle is not logged as ambiguous", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.settleOutcome = { kind: "retry_safe", reason: "settle_exact_stellar_transaction_failed" };
+    const { deps, events } = loggedDeps(h);
+    await handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+    expect(events).toEqual([]);
+  });
+});

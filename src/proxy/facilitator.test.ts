@@ -200,7 +200,12 @@ function jsonResponse(status: number, body: unknown): Response {
 describe("FacilitatorClient", () => {
   it("refuses a plain http base URL outside localhost", () => {
     expect(
-      () => new FacilitatorClient({ baseUrl: "http://facilitator.example.test", timeoutMs: 1000 }),
+      () =>
+        new FacilitatorClient({
+          baseUrl: "http://facilitator.example.test",
+          verifyTimeoutMs: 1000,
+          settleTimeoutMs: 1000,
+        }),
     ).toThrow(TypeError);
   });
 
@@ -212,7 +217,8 @@ describe("FacilitatorClient", () => {
     };
     const client = new FacilitatorClient({
       baseUrl: `${BASE}/`,
-      timeoutMs: 1000,
+      verifyTimeoutMs: 1000,
+      settleTimeoutMs: 1000,
       fetch: fetchImpl,
     });
     expect(await client.verify({ x402Version: 2 })).toEqual({ kind: "valid", payer: "GPAYER" });
@@ -224,7 +230,8 @@ describe("FacilitatorClient", () => {
   it("treats a redirect as unreachable for settle, so it is terminal", async () => {
     const client = new FacilitatorClient({
       baseUrl: BASE,
-      timeoutMs: 1000,
+      verifyTimeoutMs: 1000,
+      settleTimeoutMs: 1000,
       fetch: async () =>
         new Response(null, { status: 302, headers: { location: "https://evil.test" } }),
     });
@@ -234,7 +241,8 @@ describe("FacilitatorClient", () => {
   it("treats a network failure during verify as unavailable (fail closed)", async () => {
     const client = new FacilitatorClient({
       baseUrl: BASE,
-      timeoutMs: 1000,
+      verifyTimeoutMs: 1000,
+      settleTimeoutMs: 1000,
       fetch: async () => {
         throw new TypeError("fetch failed");
       },
@@ -245,7 +253,8 @@ describe("FacilitatorClient", () => {
   it("treats a timeout during settle as ambiguous, so terminal", async () => {
     const client = new FacilitatorClient({
       baseUrl: BASE,
-      timeoutMs: 1,
+      verifyTimeoutMs: 1000,
+      settleTimeoutMs: 1,
       fetch: async (_url, init) =>
         new Promise<Response>((_resolve, reject) => {
           init.signal?.addEventListener("abort", () =>
@@ -260,7 +269,8 @@ describe("FacilitatorClient", () => {
     const big = "x".repeat(FACILITATOR_BODY_MAX_BYTES + 1);
     const client = new FacilitatorClient({
       baseUrl: BASE,
-      timeoutMs: 1000,
+      verifyTimeoutMs: 1000,
+      settleTimeoutMs: 1000,
       fetch: async () => new Response(big, { status: 200 }),
     });
     expect(await client.verify({})).toEqual({ kind: "unavailable" });
@@ -278,5 +288,22 @@ describe("readCapped", () => {
 
   it("returns an empty string for a response with no body", async () => {
     expect(await readCapped(new Response(null), 5)).toBe("");
+  });
+});
+
+describe("B2: each call uses its own timeout", () => {
+  it("verify times out on verifyTimeoutMs and leaves settle alone", async () => {
+    const client = new FacilitatorClient({
+      baseUrl: BASE,
+      verifyTimeoutMs: 5,
+      settleTimeoutMs: 60_000,
+      fetch: async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "TimeoutError")),
+          );
+        }),
+    });
+    expect(await client.verify({})).toEqual({ kind: "unavailable" });
   });
 });

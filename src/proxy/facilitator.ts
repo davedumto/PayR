@@ -160,13 +160,15 @@ export async function readCapped(
 
 export type FacilitatorClientOptions = {
   readonly baseUrl: string;
-  readonly timeoutMs: number;
+  readonly verifyTimeoutMs: number;
+  readonly settleTimeoutMs: number;
   readonly fetch?: FacilitatorFetch;
 };
 
 export class FacilitatorClient {
   private readonly baseUrl: string;
-  private readonly timeoutMs: number;
+  private readonly verifyTimeoutMs: number;
+  private readonly settleTimeoutMs: number;
   private readonly fetchImpl: FacilitatorFetch;
 
   constructor(options: FacilitatorClientOptions) {
@@ -174,26 +176,27 @@ export class FacilitatorClient {
       throw new TypeError("facilitator base URL must be an absolute https URL");
     }
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.timeoutMs = options.timeoutMs;
+    this.verifyTimeoutMs = options.verifyTimeoutMs;
+    this.settleTimeoutMs = options.settleTimeoutMs;
     this.fetchImpl = options.fetch ?? ((input, init) => fetch(input, init));
   }
 
   async verify(body: unknown): Promise<VerifyOutcome> {
-    return classifyVerify(await this.post("/verify", body));
+    return classifyVerify(await this.post("/verify", body, this.verifyTimeoutMs));
   }
 
   async settle(body: unknown): Promise<SettleOutcome> {
-    return classifySettle(await this.post("/settle", body));
+    return classifySettle(await this.post("/settle", body, this.settleTimeoutMs));
   }
 
-  private async post(path: string, body: unknown): Promise<SettleObservation> {
+  private async post(path: string, body: unknown, timeoutMs: number): Promise<SettleObservation> {
     try {
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify(body),
         redirect: "manual",
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       return await this.observe(response);
     } catch {
