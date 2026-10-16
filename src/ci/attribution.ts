@@ -46,10 +46,19 @@ export type IdentityViolation = {
   readonly email: string;
 };
 
-/** True for noreply@anthropic.com and any address at the anthropic.com domain. */
+/** True for noreply@anthropic.com, any address at anthropic.com, and any subdomain of it. */
 export function isAnthropicEmail(email: string): boolean {
   const normalized = email.trim().toLowerCase();
-  return normalized === "noreply@anthropic.com" || normalized.endsWith("@anthropic.com");
+  const at = normalized.lastIndexOf("@");
+  if (at === -1) {
+    return false;
+  }
+  const domain = normalized.slice(at + 1);
+  return (
+    normalized === "noreply@anthropic.com" ||
+    domain === "anthropic.com" ||
+    domain.endsWith(".anthropic.com")
+  );
 }
 
 /**

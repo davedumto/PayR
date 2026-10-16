@@ -2,22 +2,24 @@ import "server-only";
 
 import { z } from "zod";
 
-import { edgeSchema, type EdgeEnv, type RawEnv, validateEnv } from "@/env.edge";
+import { proxySchema, type ProxyEnv, type RawEnv, validateEnv } from "@/env.proxy";
 
 /**
- * Server-only environment: secrets and server configuration, on top of the Edge
+ * Server-only environment: secrets and server configuration, on top of the proxy
  * set. Importing this module from client code is a build error (server-only).
  */
 
 const serverOnlySchema = z.object({
+  // CONFIG write token. Only the server may write seller configs.
+  KV_CONFIG_REST_API_TOKEN: z.string().min(1, { message: "must not be empty" }),
   ANTHROPIC_API_KEY: z.string().min(1, { message: "must not be empty" }),
   VELLAR_BOOTSTRAP_AGENT_KEY: z.string().min(1, { message: "must not be empty" }),
   ANTHROPIC_MODEL: z.string().min(1, { message: "must not be empty" }),
 });
 
-export const serverSchema = edgeSchema.extend(serverOnlySchema.shape);
+export const serverSchema = proxySchema.extend(serverOnlySchema.shape);
 
-export type ServerEnv = EdgeEnv & z.output<typeof serverOnlySchema>;
+export type ServerEnv = ProxyEnv & z.output<typeof serverOnlySchema>;
 
 export function parseServerEnv(raw: RawEnv): ServerEnv {
   return validateEnv(serverSchema, raw);
@@ -33,8 +35,11 @@ export function getServerEnv(): ServerEnv {
   if (!cachedServer) {
     cachedServer = parseServerEnv({
       VELLAR_FACILITATOR_URL: process.env.VELLAR_FACILITATOR_URL,
-      KV_REST_API_URL: process.env.KV_REST_API_URL,
-      KV_REST_API_TOKEN: process.env.KV_REST_API_TOKEN,
+      KV_CONFIG_REST_API_URL: process.env.KV_CONFIG_REST_API_URL,
+      KV_CONFIG_READ_ONLY_TOKEN: process.env.KV_CONFIG_READ_ONLY_TOKEN,
+      KV_STATE_REST_API_URL: process.env.KV_STATE_REST_API_URL,
+      KV_STATE_REST_API_TOKEN: process.env.KV_STATE_REST_API_TOKEN,
+      KV_CONFIG_REST_API_TOKEN: process.env.KV_CONFIG_REST_API_TOKEN,
       NEXT_PUBLIC_VELLAR_NETWORK: process.env.NEXT_PUBLIC_VELLAR_NETWORK,
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
       VELLAR_BOOTSTRAP_AGENT_KEY: process.env.VELLAR_BOOTSTRAP_AGENT_KEY,
