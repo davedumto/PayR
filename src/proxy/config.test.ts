@@ -233,3 +233,53 @@ describe("B5: read-only by default; side-effecting methods need an explicit ackn
     );
   });
 });
+
+describe("B7: origin auth defaults and the pubnet lockdown rule", () => {
+  const WAIVER = { acceptedAt: "2026-10-01T00:00:00Z", acceptedBy: "ops@seller.example" };
+
+  it("defaults to originAuth mode none with the default header name", () => {
+    const result = parseProxyConfig(validInput);
+    expect(result.ok && result.config.originAuth).toEqual({
+      mode: "none",
+      headerName: "x-payr-origin-key",
+    });
+  });
+
+  it("testnet needs no origin auth and no waiver", () => {
+    expect(issuesFor({ network: "stellar:testnet" })).toEqual([]);
+  });
+
+  it("pubnet with originAuth mode none and no waiver is rejected", () => {
+    expect(issuesFor({ network: "stellar:pubnet" }).join(" ")).toMatch(/lockdownWaiver/);
+  });
+
+  it("pubnet with a secret_header origin auth is accepted", () => {
+    expect(
+      issuesFor({
+        network: "stellar:pubnet",
+        originAuth: { mode: "secret_header", headerName: "x-payr-origin-key" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("pubnet with a recorded lockdown waiver is accepted", () => {
+    expect(issuesFor({ network: "stellar:pubnet", lockdownWaiver: WAIVER })).toEqual([]);
+  });
+
+  it("a waiver without a valid timestamp or actor is rejected", () => {
+    expect(
+      issuesFor({ network: "stellar:pubnet", lockdownWaiver: { ...WAIVER, acceptedAt: "soon" } })
+        .length,
+    ).toBeGreaterThan(0);
+    expect(
+      issuesFor({ network: "stellar:pubnet", lockdownWaiver: { ...WAIVER, acceptedBy: "" } })
+        .length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("an origin header name that is not a header token is rejected", () => {
+    expect(
+      issuesFor({ originAuth: { mode: "secret_header", headerName: "bad name\n" } }).join(" "),
+    ).toMatch(/headerName/);
+  });
+});

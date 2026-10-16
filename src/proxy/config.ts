@@ -91,6 +91,25 @@ export const ProxyConfigSchema = z
       .min(1)
       .default(["GET", "HEAD"]),
     sideEffectsAcknowledged: z.boolean().default(false),
+    // How the proxy proves to the seller's origin that a call came through it (B7). "none" adds nothing.
+    originAuth: z
+      .object({
+        mode: z.enum(["none", "secret_header"]).default("none"),
+        headerName: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9-]{0,63}$/i, { message: "must be a header token" })
+          .default("x-payr-origin-key"),
+      })
+      .strict()
+      .default({ mode: "none", headerName: "x-payr-origin-key" }),
+    // Records who accepted running on pubnet without origin authentication (B7). Required for that combination.
+    lockdownWaiver: z
+      .object({
+        acceptedAt: z.string().datetime(),
+        acceptedBy: z.string().min(1).max(128),
+      })
+      .strict()
+      .optional(),
     maxRequestBytes: z.number().int().min(0).max(1_048_576).default(65_536),
     // Content types the guard accepts in a request body. Parameters such as charset are ignored when matching.
     allowedContentTypes: z
@@ -108,6 +127,17 @@ export const ProxyConfigSchema = z
   .strict()
   .superRefine((value, ctx) => {
     const sideEffecting = value.allowedMethods.some((method) => SIDE_EFFECT_METHODS.has(method));
+    if (
+      value.network === "stellar:pubnet" &&
+      value.originAuth.mode === "none" &&
+      !value.lockdownWaiver
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["originAuth", "mode"],
+        message: "stellar:pubnet needs originAuth.mode other than none, or a lockdownWaiver",
+      });
+    }
     if (sideEffecting && !value.sideEffectsAcknowledged) {
       ctx.addIssue({
         code: "custom",

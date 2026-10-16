@@ -1007,3 +1007,89 @@ describe("scanner timeout: a scanner that never answers blocks the request", () 
     SCANNER_TIMEOUT_MS + 5_000,
   );
 });
+
+describe("B7: origin authentication is injected, merged last, and fails closed", () => {
+  const SECRET = "origin-secret-value";
+  const originCfg = (mode: "none" | "secret_header") =>
+    config({ originAuth: { mode, headerName: "x-payr-origin-key" } });
+
+  function withAuth(h: Harness, headersFor: () => Record<string, string> | Promise<never>) {
+    return { ...h.deps, originAuth: { headersFor } } as FlowDeps;
+  }
+
+  it("mode none adds no origin header, even when an authenticator is injected", async () => {
+    const cfg = originCfg("none");
+    const h = harness(cfg);
+    await handlePaidRequest(
+      request(cfg, paidHeaders(cfg)),
+      withAuth(h, () => ({ "x-payr-origin-key": SECRET })),
+    );
+    expect(h.calls.upstream[0]!.headers).not.toHaveProperty("x-payr-origin-key");
+  });
+
+  it("mode secret_header sends the authenticator's header to the upstream", async () => {
+    const cfg = originCfg("secret_header");
+    const h = harness(cfg);
+    const response = await handlePaidRequest(
+      request(cfg, paidHeaders(cfg)),
+      withAuth(h, () => ({ "x-payr-origin-key": SECRET })),
+    );
+    expect(response.status).toBe(200);
+    expect(h.calls.upstream[0]!.headers).toHaveProperty("x-payr-origin-key", SECRET);
+  });
+
+  it("the buyer's header with the same name never reaches the upstream; the authenticator's value wins", async () => {
+    const cfg = originCfg("secret_header");
+    const h = harness(cfg);
+    await handlePaidRequest(
+      request(cfg, { ...paidHeaders(cfg), "x-payr-origin-key": "attacker" }),
+      withAuth(h, () => ({ "x-payr-origin-key": SECRET })),
+    );
+    expect(h.calls.upstream[0]!.headers["x-payr-origin-key"]).toBe(SECRET);
+  });
+
+  it("the authenticator cannot add other headers: only the configured name is merged", async () => {
+    const cfg = originCfg("secret_header");
+    const h = harness(cfg);
+    await handlePaidRequest(
+      request(cfg, paidHeaders(cfg)),
+      withAuth(h, () => ({ "x-payr-origin-key": SECRET, cookie: "smuggled=1" })),
+    );
+    expect(h.calls.upstream[0]!.headers).not.toHaveProperty("cookie");
+  });
+
+  it("secret_header with no authenticator injected gets 503 and no upstream call", async () => {
+    const cfg = originCfg("secret_header");
+    const h = harness(cfg);
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(response.status).toBe(503);
+    expect(JSON.parse(bodyText(response)).error).toBe("origin_auth_unavailable");
+    expect(h.calls.upstream).toHaveLength(0);
+    expect(h.calls.settle).toBe(0);
+  });
+
+  it("headersFor that throws gets 503 with no upstream call, and the replay lock is released", async () => {
+    const cfg = originCfg("secret_header");
+    const h = harness(cfg);
+    const failing = withAuth(h, () => Promise.reject(new Error("vault down")));
+    const first = await handlePaidRequest(request(cfg, paidHeaders(cfg)), failing);
+    expect(first.status).toBe(503);
+    expect(h.calls.upstream).toHaveLength(0);
+    const retry = await handlePaidRequest(
+      request(cfg, paidHeaders(cfg)),
+      withAuth(h, () => ({ "x-payr-origin-key": SECRET })),
+    );
+    expect(retry.status).toBe(200);
+  });
+
+  it("headersFor that returns no value for the configured name gets 503 and no upstream call", async () => {
+    const cfg = originCfg("secret_header");
+    const h = harness(cfg);
+    const response = await handlePaidRequest(
+      request(cfg, paidHeaders(cfg)),
+      withAuth(h, () => ({ "x-other": "1" })),
+    );
+    expect(response.status).toBe(503);
+    expect(h.calls.upstream).toHaveLength(0);
+  });
+});

@@ -120,6 +120,14 @@ export interface PayloadScanner {
   scan(input: ScanInput): Promise<ScanVerdict>;
 }
 
+/** Produces the origin-auth headers for one upstream call (B7). Only the configured header name is kept. */
+export interface OriginAuthenticator {
+  headersFor(target: {
+    readonly proxyId: string;
+    readonly url: string;
+  }): Headers | Promise<Headers>;
+}
+
 export type FlowDeps = {
   readonly configs: ConfigStore;
   readonly state: StateKv;
@@ -128,6 +136,7 @@ export type FlowDeps = {
   readonly clock: Clock;
   readonly scanner?: PayloadScanner;
   readonly logger?: ProxyLogger;
+  readonly originAuth?: OriginAuthenticator;
 };
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): ProxyResponse {
@@ -380,6 +389,28 @@ async function runAfterLock(
     }
   }
 
+  // B7: origin auth is merged after the buyer's allowlisted headers, so it always wins.
+  // A missing or failing authenticator fails closed before any upstream call.
+  let originHeaders: Headers = {};
+  if (config.originAuth.mode !== "none") {
+    if (!deps.originAuth) {
+      return unavailable(503, "origin_auth_unavailable", 30);
+    }
+    try {
+      const produced = await deps.originAuth.headersFor({
+        proxyId: config.id,
+        url: target.toString(),
+      });
+      const value = produced[config.originAuth.headerName.toLowerCase()];
+      if (value === undefined) {
+        return unavailable(503, "origin_auth_unavailable", 30);
+      }
+      originHeaders = { [config.originAuth.headerName.toLowerCase()]: value };
+    } catch {
+      return unavailable(503, "origin_auth_unavailable", 30);
+    }
+  }
+
   // I2: the upstream must succeed before settle is attempted.
   let upstream: UpstreamResponse;
   try {
@@ -388,7 +419,7 @@ async function runAfterLock(
       {
         method: request.method,
         url: target.toString(),
-        headers: forwardHeaders,
+        headers: { ...forwardHeaders, ...originHeaders },
         body: request.body.byteLength > 0 ? request.body : undefined,
       },
       { timeoutMs: config.upstreamTimeoutMs, maxBytes: config.maxResponseBytes },
