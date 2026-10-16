@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
-
+import { canonicalHash } from "@/proxy/canonical";
 import { parseProxyConfig, type ProxyConfig } from "@/proxy/config";
 import {
   buildPaymentRequired,
+  type ParsedSignature,
   encodeHeader,
   parsePaymentSignature,
   requirementsFor,
@@ -85,6 +85,8 @@ export interface ConfigStore {
 export interface StateKv {
   /** SET NX with a TTL. Resolves true if the key was set, false if it existed. May throw. */
   setNx(key: string, value: string, ttlSeconds: number): Promise<boolean>;
+  /** Removes a key. Used to release a lock when no upstream call happened. */
+  delete(key: string): Promise<void>;
 }
 
 export interface FacilitatorPort {
@@ -152,8 +154,14 @@ function unavailable(status: number, error: string, retryAfter: number): ProxyRe
   return json(status, { error }, { "retry-after": String(retryAfter) });
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+type LockState = { readonly key: string; upstreamCalled: boolean };
+
+async function releaseLock(deps: FlowDeps, key: string): Promise<void> {
+  try {
+    await deps.state.delete(key);
+  } catch {
+    // The lock then expires with its TTL. Failing closed here is safe: it only delays a retry.
+  }
 }
 
 function termsMatch(
@@ -285,8 +293,14 @@ export async function handlePaidRequest(
     return challenge(config, request, "payment_terms_mismatch");
   }
 
-  // I3: one signature may reach the upstream at most once.
-  const lockKey = `lock:${sha256(signatureHeader)}`;
+  // I3 and B3: one payment reaches the upstream at most once. The lock key is the
+  // canonical hash of the signed payload, so re-encoded copies of the same payment collide.
+  let lockKey: string;
+  try {
+    lockKey = `lock:${canonicalHash(parsed.signature.payload)}`;
+  } catch {
+    return challenge(config, request, "invalid_payment_signature");
+  }
   let acquired: boolean;
   try {
     acquired = await deps.state.setNx(lockKey, "1", LOCK_TTL_SECONDS);
@@ -296,14 +310,33 @@ export async function handlePaidRequest(
   if (!acquired) {
     return json(409, { error: "duplicate_payment_signature" });
   }
+  const lock: LockState = { key: lockKey, upstreamCalled: false };
+  try {
+    return await runAfterLock(config, request, parsed.signature, required, deps, lock);
+  } finally {
+    // B3: release the lock when no upstream call happened, so a legitimate retry is not answered 409.
+    if (!lock.upstreamCalled) {
+      await releaseLock(deps, lock.key);
+    }
+  }
+}
 
+/** Everything after the replay lock is taken. The caller releases the lock if no upstream call happened. */
+async function runAfterLock(
+  config: ProxyConfig,
+  request: ProxyRequest,
+  signature: ParsedSignature,
+  required: PaymentRequirements,
+  deps: FlowDeps,
+  lock: LockState,
+): Promise<ProxyResponse> {
   const facilitatorRequest = (): {
     x402Version: 2;
-    paymentPayload: typeof parsed.signature;
+    paymentPayload: ParsedSignature;
     paymentRequirements: PaymentRequirements;
   } => ({
     x402Version: 2,
-    paymentPayload: parsed.signature,
+    paymentPayload: signature,
     paymentRequirements: required,
   });
 
@@ -347,6 +380,7 @@ export async function handlePaidRequest(
   // I2: the upstream must succeed before settle is attempted.
   let upstream: UpstreamResponse;
   try {
+    lock.upstreamCalled = true;
     upstream = await deps.upstream.fetch(
       {
         method: request.method,

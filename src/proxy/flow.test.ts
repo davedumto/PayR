@@ -99,6 +99,9 @@ function harness(cfg: ProxyConfig): Harness {
       locks.add(key);
       return true;
     },
+    delete: async (key) => {
+      locks.delete(key);
+    },
   };
   const facilitator: FacilitatorPort = {
     verify: async () => {
@@ -639,5 +642,156 @@ describe("I7: the flow reads only through its injected ports", () => {
     const forwarded = JSON.stringify(h.calls.upstream);
     expect(forwarded).not.toMatch(/ANTHROPIC|BOOTSTRAP|KV_CONFIG_REST_API_TOKEN/);
     expect(Object.keys(response.headers).join(" ")).not.toMatch(/authorization|secret/i);
+  });
+});
+
+describe("B3: the replay lock is keyed on the canonical payload and released when no upstream call happened", () => {
+  const payloadA = { authorization: "opaque", nonce: 7 };
+
+  function reEncoded(
+    cfg: ProxyConfig,
+    payload: Record<string, unknown>,
+    outer: Record<string, unknown> = {},
+  ): string {
+    return encodeHeader({ ...outer, x402Version: 2, accepted: requirementsFor(cfg), payload });
+  }
+
+  it("B3: a verify that is invalid releases the lock, so a re-encoded retry is not answered 409", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.verifyOutcome = { kind: "invalid", reason: "bad_sig" };
+    const first = await handlePaidRequest(
+      request(cfg, { "payment-signature": reEncoded(cfg, payloadA) }),
+      h.deps,
+    );
+    expect(first.status).toBe(402);
+    h.verifyOutcome = { kind: "valid" };
+    const retry = await handlePaidRequest(
+      request(cfg, { "payment-signature": reEncoded(cfg, payloadA, { resource: { url: "x" } }) }),
+      h.deps,
+    );
+    expect(retry.status).toBe(200);
+    expect(h.calls.verify).toBe(2);
+  });
+
+  it("B3: an unavailable facilitator at verify releases the lock for a legitimate retry", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.verifyOutcome = { kind: "unavailable" };
+    expect(
+      (
+        await handlePaidRequest(
+          request(cfg, paidHeaders(cfg, { accepted: requirementsFor(cfg), payload: payloadA })),
+          h.deps,
+        )
+      ).status,
+    ).toBe(503);
+    h.verifyOutcome = { kind: "valid" };
+    expect(
+      (
+        await handlePaidRequest(
+          request(cfg, paidHeaders(cfg, { accepted: requirementsFor(cfg), payload: payloadA })),
+          h.deps,
+        )
+      ).status,
+    ).toBe(200);
+  });
+
+  it("B3: a scanner block releases the lock for a legitimate retry", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.scanner = { scan: async () => ({ allow: false, reason: "policy" }) };
+    expect(
+      (
+        await handlePaidRequest(
+          request(cfg, { "payment-signature": reEncoded(cfg, payloadA) }),
+          h.deps,
+        )
+      ).status,
+    ).toBe(403);
+    h.scanner = { scan: async () => ({ allow: true }) };
+    expect(
+      (
+        await handlePaidRequest(
+          request(cfg, { "payment-signature": reEncoded(cfg, payloadA) }),
+          h.deps,
+        )
+      ).status,
+    ).toBe(200);
+  });
+
+  it("B3: once the upstream has been called, the lock is kept and a re-encoded copy gets 409", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.upstreamResult = { status: 500, headers: {}, body: new Uint8Array() };
+    expect(
+      (
+        await handlePaidRequest(
+          request(cfg, { "payment-signature": reEncoded(cfg, payloadA) }),
+          h.deps,
+        )
+      ).status,
+    ).toBe(502);
+    h.upstreamResult = { status: 200, headers: {}, body: new TextEncoder().encode("ok") };
+    const copy = await handlePaidRequest(
+      request(cfg, {
+        "payment-signature": reEncoded(cfg, payloadA, { extensions: { note: "same payment" } }),
+      }),
+      h.deps,
+    );
+    expect(copy.status).toBe(409);
+    expect(h.calls.upstream).toHaveLength(1);
+  });
+
+  it("B3: two payloads that differ in one value do not collide", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.upstreamResult = { status: 500, headers: {}, body: new Uint8Array() };
+    await handlePaidRequest(
+      request(cfg, { "payment-signature": reEncoded(cfg, payloadA) }),
+      h.deps,
+    );
+    h.upstreamResult = { status: 200, headers: {}, body: new TextEncoder().encode("ok") };
+    const other = await handlePaidRequest(
+      request(cfg, { "payment-signature": reEncoded(cfg, { ...payloadA, nonce: 8 }) }),
+      h.deps,
+    );
+    expect(other.status).toBe(200);
+  });
+
+  it("B3: payload key order does not change the lock key", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.upstreamResult = { status: 500, headers: {}, body: new Uint8Array() };
+    await handlePaidRequest(
+      request(cfg, { "payment-signature": reEncoded(cfg, { a: 1, b: 2 }) }),
+      h.deps,
+    );
+    h.upstreamResult = { status: 200, headers: {}, body: new TextEncoder().encode("ok") };
+    const reordered = await handlePaidRequest(
+      request(cfg, { "payment-signature": reEncoded(cfg, { b: 2, a: 1 }) }),
+      h.deps,
+    );
+    expect(reordered.status).toBe(409);
+  });
+
+  it("B3: if the release itself fails, the lock stays and the request fails closed", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    h.verifyOutcome = { kind: "invalid", reason: "bad_sig" };
+    const failingDeps = {
+      ...h.deps,
+      state: {
+        setNx: async () => true,
+        delete: async () => {
+          throw new Error("KV unavailable");
+        },
+      },
+    };
+    const response = await handlePaidRequest(
+      request(cfg, { "payment-signature": reEncoded(cfg, payloadA) }),
+      failingDeps,
+    );
+    expect(response.status).toBe(402);
   });
 });
