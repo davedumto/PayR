@@ -18,7 +18,7 @@ Context7 was unavailable (monthly quota exceeded), so Next.js facts come from th
 - Proxy "defaults to the Node.js runtime". "The `runtime` config option is not available in Proxy files. Setting the `runtime` config option in Proxy will throw an error."
 - Route segment config lists `runtime` as `'nodejs' | 'edge' (deprecated)`.
 
-Conclusion: there is no supported, non-deprecated Edge runtime in Next 16 for either proxy or route handlers. The brief's default (answer unpaid requests at Edge) would rely on a deprecated API. The brief's `env.edge` module boundary still works as a module boundary, but no code will run on the Next Edge runtime.
+Conclusion: there is no supported, non-deprecated Edge runtime in Next 16 for either proxy or route handlers. The brief's default (answer unpaid requests at Edge) would rely on a deprecated API. The brief's `env.edge` boundary is renamed `env.proxy`: a module boundary for what the proxy handler may read. No code runs on the Next Edge runtime.
 
 ## (b) @x402/core and @x402/stellar under Edge
 
@@ -66,7 +66,7 @@ Conclusion: pinned fetch is available in the Node runtime. UNVERIFIED on Vercel:
 1. Run everything on the Node runtime: proxy logic, challenge issuance, verify, forward, settle. Do not rely on Edge.
 2. Keep unpaid requests cheap in Node. The 402 path needs one KV config read and no upstream call.
 3. Put IP-pinned, validated outbound fetches in Node only.
-4. Keep the `env.edge` naming as a module boundary for "safe for any runtime", but do not ship an Edge runtime.
+4. The boundary is named `env.proxy` (src/env.proxy.ts), since the code runs on Node. No Edge runtime is shipped.
 5. Revisit an Edge fast path only when Next supports one without deprecated APIs, or when it can live outside Next.
 
 Open for CTO decision: this changes the default in the brief. Shall I proceed on the Node-only plan?

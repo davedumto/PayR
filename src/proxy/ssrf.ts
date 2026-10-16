@@ -5,8 +5,9 @@ import { lookup } from "node:dns/promises";
  *
  * Two layers. validateTargetUrl runs on every config write and read and needs no
  * network. resolveAndValidate runs in Node immediately before the upstream
- * connection and checks every address the name resolves to. Edge cannot resolve
- * DNS, so Node is the only runtime that can enforce the second layer.
+ * connection and checks every address the name resolves to. The static check alone
+ * is not enough: a name can resolve to a private address, so the second layer is
+ * required, and only Node can perform it.
  */
 
 export type TargetUrlCheck =

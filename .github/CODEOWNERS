@@ -1,7 +1,7 @@
 # Default: the repository owner reviews everything.
 *                         @davedumto
 
-# Environment contract and secret boundary. Changes here decide what Edge can read.
+# Environment contract and secret boundary. Changes here decide what the proxy can read.
 /src/env.*.ts             @davedumto
 /src/instrumentation.ts   @davedumto
 

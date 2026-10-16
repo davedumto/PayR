@@ -1,10 +1,10 @@
 import { z } from "zod";
 
 /**
- * Environment variables that the Edge runtime may read.
+ * Environment variables the proxy request handler may read.
  *
  * This file must never reference a server-only secret. A test in
- * env.edge.test.ts reads this file's source and fails if one appears. Server
+ * env.proxy.test.ts reads this file's source and fails if one appears. Server
  * secrets belong in env.server.ts.
  */
 
@@ -87,34 +87,34 @@ export function isSecureServiceUrl(value: string): boolean {
 
 const secureUrl = (message: string) => z.string().refine(isSecureServiceUrl, { message });
 
-export const edgeSchema = publicSchema.extend({
+export const proxySchema = publicSchema.extend({
   VELLAR_FACILITATOR_URL: secureUrl(
     "must be an absolute https URL (http is allowed for localhost in tests only)",
   ),
-  // CONFIG: seller configs. The Edge only reads them, so its token is read-only.
+  // CONFIG: seller configs. The proxy only reads them, so its token is read-only.
   KV_CONFIG_REST_API_URL: secureUrl("must be an absolute https URL"),
   KV_CONFIG_READ_ONLY_TOKEN: z.string().min(1, { message: "must not be empty" }),
-  // STATE: locks and rate counters. The Edge writes these, so its token is read-write.
+  // STATE: locks and rate counters. The proxy writes these, so its token is read-write.
   KV_STATE_REST_API_URL: secureUrl("must be an absolute https URL"),
   KV_STATE_REST_API_TOKEN: z.string().min(1, { message: "must not be empty" }),
 });
 
-export type EdgeEnv = z.output<typeof edgeSchema>;
-export type PublicNetwork = EdgeEnv["NEXT_PUBLIC_VELLAR_NETWORK"];
+export type ProxyEnv = z.output<typeof proxySchema>;
+export type PublicNetwork = ProxyEnv["NEXT_PUBLIC_VELLAR_NETWORK"];
 
-export function parseEdgeEnv(raw: RawEnv): EdgeEnv {
-  return validateEnv(edgeSchema, raw);
+export function parseProxyEnv(raw: RawEnv): ProxyEnv {
+  return validateEnv(proxySchema, raw);
 }
 
-let cachedEdge: EdgeEnv | undefined;
+let cachedProxy: ProxyEnv | undefined;
 
 /**
- * Reads the Edge variables once and caches the result. Property access is
+ * Reads the proxy variables once and caches the result. Property access is
  * written out literally so Next.js can inline the NEXT_PUBLIC_ value.
  */
-export function getEdgeEnv(): EdgeEnv {
-  if (!cachedEdge) {
-    cachedEdge = parseEdgeEnv({
+export function getProxyEnv(): ProxyEnv {
+  if (!cachedProxy) {
+    cachedProxy = parseProxyEnv({
       VELLAR_FACILITATOR_URL: process.env.VELLAR_FACILITATOR_URL,
       KV_CONFIG_REST_API_URL: process.env.KV_CONFIG_REST_API_URL,
       KV_CONFIG_READ_ONLY_TOKEN: process.env.KV_CONFIG_READ_ONLY_TOKEN,
@@ -123,7 +123,7 @@ export function getEdgeEnv(): EdgeEnv {
       NEXT_PUBLIC_VELLAR_NETWORK: process.env.NEXT_PUBLIC_VELLAR_NETWORK,
     });
   }
-  return cachedEdge;
+  return cachedProxy;
 }
 
 /**

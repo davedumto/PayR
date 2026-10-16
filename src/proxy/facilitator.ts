@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { isSecureServiceUrl } from "@/env.edge";
+import { isSecureServiceUrl } from "@/env.proxy";
 
 /**
  * Client for the Vellar x402 facilitator: GET /supported, POST /verify, POST /settle.

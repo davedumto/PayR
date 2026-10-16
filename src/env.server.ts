@@ -2,10 +2,10 @@ import "server-only";
 
 import { z } from "zod";
 
-import { edgeSchema, type EdgeEnv, type RawEnv, validateEnv } from "@/env.edge";
+import { proxySchema, type ProxyEnv, type RawEnv, validateEnv } from "@/env.proxy";
 
 /**
- * Server-only environment: secrets and server configuration, on top of the Edge
+ * Server-only environment: secrets and server configuration, on top of the proxy
  * set. Importing this module from client code is a build error (server-only).
  */
 
@@ -17,9 +17,9 @@ const serverOnlySchema = z.object({
   ANTHROPIC_MODEL: z.string().min(1, { message: "must not be empty" }),
 });
 
-export const serverSchema = edgeSchema.extend(serverOnlySchema.shape);
+export const serverSchema = proxySchema.extend(serverOnlySchema.shape);
 
-export type ServerEnv = EdgeEnv & z.output<typeof serverOnlySchema>;
+export type ServerEnv = ProxyEnv & z.output<typeof serverOnlySchema>;
 
 export function parseServerEnv(raw: RawEnv): ServerEnv {
   return validateEnv(serverSchema, raw);

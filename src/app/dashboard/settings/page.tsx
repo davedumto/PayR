@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 import { Card } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { getPublicNetwork } from "@/env.edge";
+import { getPublicNetwork } from "@/env.proxy";
 
 export const metadata: Metadata = { title: "Settings" };
 

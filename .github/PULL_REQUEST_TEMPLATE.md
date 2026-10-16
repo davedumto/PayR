@@ -53,5 +53,5 @@ CI run: <!-- link -->
 ## Security checklist
 
 - [ ] No secrets committed, and `.env.local` is not in the diff
-- [ ] No server-only variable is read in client or Edge code
+- [ ] No server-only variable is read in client or proxy code
 - [ ] No new third-party request in the browser

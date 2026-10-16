@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { EnvValidationError, publicSchema, type RawEnv } from "@/env.edge";
+import { EnvValidationError, publicSchema, type RawEnv } from "@/env.proxy";
 import { parseServerEnv, serverSchema } from "@/env.server";
 
 const valid: RawEnv = {

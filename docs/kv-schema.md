@@ -2,12 +2,12 @@
 
 The proxy uses two KV stores. Each has its own REST endpoint and token.
 
-| Store  | Env (URL / token)                                                                                     | Who writes      | Who reads       |
-| ------ | ----------------------------------------------------------------------------------------------------- | --------------- | --------------- |
-| CONFIG | `KV_CONFIG_REST_API_URL` / `KV_CONFIG_REST_API_TOKEN` (server) and `KV_CONFIG_READ_ONLY_TOKEN` (Edge) | Server only     | Edge and server |
-| STATE  | `KV_STATE_REST_API_URL` / `KV_STATE_REST_API_TOKEN`                                                   | Edge and server | Edge and server |
+| Store  | Env (URL / token)                                                                                      | Who writes       | Who reads        |
+| ------ | ------------------------------------------------------------------------------------------------------ | ---------------- | ---------------- |
+| CONFIG | `KV_CONFIG_REST_API_URL` / `KV_CONFIG_REST_API_TOKEN` (server) and `KV_CONFIG_READ_ONLY_TOKEN` (proxy) | Server only      | proxy and server |
+| STATE  | `KV_STATE_REST_API_URL` / `KV_STATE_REST_API_TOKEN`                                                    | proxy and server | proxy and server |
 
-Edge never holds a token that can write CONFIG. Losing the Edge read-only token
+The proxy never holds a token that can write CONFIG. Losing the proxy read-only token
 exposes seller configs but not their write path.
 
 ## Keys

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { EnvValidationError, getPublicNetwork, parseEdgeEnv, type RawEnv } from "@/env.edge";
+import { EnvValidationError, getPublicNetwork, parseProxyEnv, type RawEnv } from "@/env.proxy";
 
 const SERVER_ONLY = [
   "ANTHROPIC_API_KEY",
@@ -21,7 +21,7 @@ const valid: RawEnv = {
 
 function problemsFor(raw: RawEnv): string[] {
   try {
-    parseEdgeEnv(raw);
+    parseProxyEnv(raw);
   } catch (error) {
     if (error instanceof EnvValidationError) {
       return [...error.problems];
@@ -31,8 +31,8 @@ function problemsFor(raw: RawEnv): string[] {
   return [];
 }
 
-describe("env.edge source boundary", () => {
-  const source = readFileSync(new URL("./env.edge.ts", import.meta.url), "utf8");
+describe("env.proxy source boundary", () => {
+  const source = readFileSync(new URL("./env.proxy.ts", import.meta.url), "utf8");
 
   it.each(SERVER_ONLY)("never references the server-only secret %s", (name) => {
     expect(source).not.toContain(name);
@@ -44,12 +44,12 @@ describe("env.edge source boundary", () => {
   });
 });
 
-describe("parseEdgeEnv", () => {
-  it("accepts the Edge variables", () => {
-    expect(parseEdgeEnv(valid).NEXT_PUBLIC_VELLAR_NETWORK).toBe("testnet");
+describe("parseProxyEnv", () => {
+  it("accepts the proxy variables", () => {
+    expect(parseProxyEnv(valid).NEXT_PUBLIC_VELLAR_NETWORK).toBe("testnet");
   });
 
-  it("names a missing Edge variable", () => {
+  it("names a missing proxy variable", () => {
     expect(problemsFor({ ...valid, KV_STATE_REST_API_TOKEN: undefined })).toEqual([
       "KV_STATE_REST_API_TOKEN is missing",
     ]);
@@ -78,7 +78,7 @@ describe("parseEdgeEnv", () => {
 
   it("allows http to localhost in tests", () => {
     expect(() =>
-      parseEdgeEnv({ ...valid, VELLAR_FACILITATOR_URL: "http://localhost:4010" }),
+      parseProxyEnv({ ...valid, VELLAR_FACILITATOR_URL: "http://localhost:4010" }),
     ).not.toThrow();
   });
 
@@ -92,7 +92,7 @@ describe("parseEdgeEnv", () => {
   );
 
   it("does not require server secrets", () => {
-    expect(() => parseEdgeEnv(valid)).not.toThrow();
+    expect(() => parseProxyEnv(valid)).not.toThrow();
   });
 });
 
