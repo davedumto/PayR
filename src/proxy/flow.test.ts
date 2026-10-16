@@ -795,3 +795,27 @@ describe("B3: the replay lock is keyed on the canonical payload and released whe
     expect(response.status).toBe(402);
   });
 });
+
+describe("B1: the upstream URL is built from the seller's base path, never from the buyer's path", () => {
+  it.each([
+    ["/../admin"],
+    ["/%2e%2e/admin"],
+    ["/%252e%252e/admin"],
+    ["//evil.test/x"],
+    ["/a\\..\\b"],
+  ])("a traversal path %s gets 400 before any payment or upstream call", async (path) => {
+    const cfg = config();
+    const h = harness(cfg);
+    const response = await handlePaidRequest(request(cfg, paidHeaders(cfg), { path }), h.deps);
+    expect(response.status).toBe(400);
+    expect(h.calls.verify).toBe(0);
+    expect(h.calls.upstream).toHaveLength(0);
+  });
+
+  it("the upstream receives the URL under the seller's base path", async () => {
+    const cfg = config();
+    const h = harness(cfg);
+    await handlePaidRequest(request(cfg, paidHeaders(cfg)), h.deps);
+    expect(h.calls.upstream[0]?.url).toBe("https://api.example.com/v1/forecast?city=lisbon");
+  });
+});

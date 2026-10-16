@@ -1,5 +1,6 @@
 import { canonicalHash } from "@/proxy/canonical";
 import { parseProxyConfig, type ProxyConfig } from "@/proxy/config";
+import { buildUpstreamUrl } from "@/proxy/url";
 import {
   buildPaymentRequired,
   type ParsedSignature,
@@ -271,8 +272,9 @@ export async function handlePaidRequest(
   if (request.body.byteLength > config.maxRequestBytes) {
     return json(413, { error: "request_too_large" });
   }
-  if (!request.path.startsWith("/") || request.path.startsWith("//")) {
-    return json(400, { error: "invalid_path" });
+  const target = buildUpstreamUrl(config.targetUrl, request.path);
+  if (!target.ok) {
+    return json(400, { error: "invalid_path", reason: target.reason });
   }
 
   const signatureHeader = request.headers["payment-signature"];
@@ -312,7 +314,7 @@ export async function handlePaidRequest(
   }
   const lock: LockState = { key: lockKey, upstreamCalled: false };
   try {
-    return await runAfterLock(config, request, parsed.signature, required, deps, lock);
+    return await runAfterLock(config, request, parsed.signature, required, target.url, deps, lock);
   } finally {
     // B3: release the lock when no upstream call happened, so a legitimate retry is not answered 409.
     if (!lock.upstreamCalled) {
@@ -327,6 +329,7 @@ async function runAfterLock(
   request: ProxyRequest,
   signature: ParsedSignature,
   required: PaymentRequirements,
+  target: URL,
   deps: FlowDeps,
   lock: LockState,
 ): Promise<ProxyResponse> {
@@ -384,7 +387,7 @@ async function runAfterLock(
     upstream = await deps.upstream.fetch(
       {
         method: request.method,
-        url: `${config.targetUrl.replace(/\/+$/, "")}${request.path}`,
+        url: target.toString(),
         headers: forwardHeaders,
         body: request.body.byteLength > 0 ? request.body : undefined,
       },
