@@ -11,6 +11,7 @@ import {
   type FlowDeps,
   type PayloadScanner,
   type ProxyRequest,
+  type ProxyResponse,
   SCANNER_TIMEOUT_MS,
   sanitizeResponseHeaders,
   type StateKv,
@@ -1092,4 +1093,98 @@ describe("B7: origin authentication is injected, merged last, and fails closed",
     expect(response.status).toBe(503);
     expect(h.calls.upstream).toHaveLength(0);
   });
+});
+
+describe("B8: the target host never reaches the buyer or the logs", () => {
+  const TARGET_HOST = "api.example.com";
+
+  function timeoutError(): Error {
+    const error = new Error("timed out");
+    error.name = "TimeoutError";
+    return error;
+  }
+
+  const outcomes: Array<{
+    name: string;
+    run: (cfg: ProxyConfig, h: Harness, deps: FlowDeps) => Promise<ProxyResponse>;
+  }> = [
+    { name: "unpaid", run: (cfg, _h, deps) => handlePaidRequest(request(cfg), deps) },
+    {
+      name: "bad method",
+      run: (cfg, _h, deps) => handlePaidRequest(request(cfg, {}, { method: "PUT" }), deps),
+    },
+    {
+      name: "traversal",
+      run: (cfg, _h, deps) =>
+        handlePaidRequest(request(cfg, paidHeaders(cfg), { path: "/../x" }), deps),
+    },
+    {
+      name: "invalid verify",
+      run: (cfg, h, deps) => {
+        h.verifyOutcome = { kind: "invalid", reason: "bad_sig" };
+        return handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+      },
+    },
+    {
+      name: "upstream 500",
+      run: (cfg, h, deps) => {
+        h.upstreamResult = { status: 500, headers: {}, body: new Uint8Array() };
+        return handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+      },
+    },
+    {
+      name: "upstream timeout",
+      run: (cfg, h, deps) => {
+        h.upstreamResult = timeoutError();
+        return handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+      },
+    },
+    {
+      name: "settled",
+      run: (cfg, _h, deps) => handlePaidRequest(request(cfg, paidHeaders(cfg)), deps),
+    },
+    {
+      name: "terminal charged",
+      run: (cfg, h, deps) => {
+        h.settleOutcome = { kind: "terminal_charged", transaction: null, reason: "ambiguous: x" };
+        return handlePaidRequest(request(cfg, paidHeaders(cfg)), deps);
+      },
+    },
+    {
+      name: "settle throws",
+      run: (cfg, _h, deps) =>
+        handlePaidRequest(request(cfg, paidHeaders(cfg)), {
+          ...deps,
+          facilitator: {
+            verify: async () => ({ kind: "valid" as const }),
+            settle: async () => {
+              throw new Error("socket hang up");
+            },
+          },
+        }),
+    },
+  ];
+
+  it.each(outcomes.map((o) => [o.name, o] as const))(
+    "%s: neither the response nor the logs contain the target host",
+    async (_name, outcome) => {
+      const cfg = config();
+      const h = harness(cfg);
+      const events: { event: string; fields: Record<string, unknown> }[] = [];
+      const deps = {
+        ...h.deps,
+        logger: {
+          warn: (event: string, fields: Record<string, unknown>) => events.push({ event, fields }),
+        },
+      } as FlowDeps;
+      const response = await outcome.run(cfg, h, deps);
+      const surface = JSON.stringify({
+        status: response.status,
+        headers: response.headers,
+        body: decoder.decode(response.body),
+      });
+      expect(surface).not.toContain(TARGET_HOST);
+      expect(JSON.stringify(events)).not.toContain(TARGET_HOST);
+    },
+  );
 });
